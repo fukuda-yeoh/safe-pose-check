@@ -5,7 +5,6 @@ os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 
 import cv2 as cv
 import numpy as np
-import serial
 from threading import Thread
 
 from components import (
@@ -45,13 +44,12 @@ dist_coeffs = np.array(
 )  # 例
 
 # カメラを開く
-cap = cv.VideoCapture(0)
 model_path = project_root() / "models" / "pose_landmarker_full.task"
 landmarks_def_path = project_root() / "models" / "landmarks.txt"
 save_dir = project_root() / "record"
 save_dir.mkdir(exist_ok=True)
 
-camera_thread = CameraThread(cap)
+camera_thread = CameraThread(1, camera_matrix, dist_coeffs)
 recognition_thread = RecognitionThread(model_path, camera_thread.queue)
 
 landmark_labels = get_landmark_labels(landmarks_def_path)
@@ -74,9 +72,6 @@ detector_thread.start()
 camera_thread.start()
 
 while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
     (
         frame_timestamp_ms,
         final_frame,
@@ -84,8 +79,7 @@ while True:
         params,
         events,
     ) = event_detector.out_queue.get()
-    # 歪み補正
-    undistorted_frame = cv.undistort(frame, camera_matrix, dist_coeffs)
+
 
     display_frame.set_dynamic_img("Camera", final_frame)
     event_detected = False  # イベント発生フラグ

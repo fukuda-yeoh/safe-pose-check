@@ -140,6 +140,9 @@ class EventDetector:
             if pose_landmarks_list := result.pose_landmarks:
                 landmark_array = landmarks_to_array(pose_landmarks_list)
                 params, annotated_image, events = self.run(landmark_array, frame)
+
+                self.update_scores(params)  # スコアを更新
+
                 annotated_image = draw_landmarks_on_image(
                     annotated_image, pose_landmarks_list
                 )
