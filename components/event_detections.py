@@ -4,6 +4,7 @@ from queue import Queue
 import cv2 as cv
 import numpy as np
 
+from funcs.calc_score import calculate_score_l, calculate_score_r
 from funcs.landmark_funcs import (
     get_pos_array,
     draw_arrow_on_image,
@@ -22,10 +23,10 @@ class EventState(Enum):
 
 class EventDetector:
     def __init__(
-        self,
-        landmark_labels,
-        roi_points,
-        clear_roi_points,
+            self,
+            landmark_labels,
+            roi_points,
+            clear_roi_points,
     ):
         self.labels = landmark_labels
         self.roi_points = np.array(roi_points, dtype=np.float32)  # メインROIの頂点座標
@@ -98,24 +99,6 @@ class EventDetector:
         # ROI内に存在するか
         if not params.get("in_roi", False):
             return
-
-        def calculate_score_l(angle, min_angle, max_angle):
-            if angle <= min_angle:
-                return 100
-            elif min_angle < angle <= max_angle:
-                return int((100 * (max_angle - angle)) / (max_angle - min_angle))
-            elif angle > max_angle:
-                return 0
-            return 0
-
-        def calculate_score_r(angle, min_angle, max_angle):
-            if angle <= min_angle:
-                return 0
-            elif min_angle < angle <= max_angle:
-                return int((100 * (angle - min_angle)) / (max_angle - min_angle))
-            elif angle > max_angle:
-                return 100
-            return 0
 
         # headのスコア計算
         self.scores["LL_score"] = max(
@@ -218,14 +201,14 @@ class EventDetector:
 
     def crop_event(self, frame, center):
         return frame[
-            int(center[1] - self.crop_size[1] / 2) : int(
-                center[1] + self.crop_size[1] / 2
-            ),
-            int(center[0] - self.crop_size[0] / 2) : int(
-                center[0] + self.crop_size[0] / 2
-            ),
-            :,
-        ]
+               int(center[1] - self.crop_size[1] / 2): int(
+                   center[1] + self.crop_size[1] / 2
+               ),
+               int(center[0] - self.crop_size[0] / 2): int(
+                   center[0] + self.crop_size[0] / 2
+               ),
+               :,
+               ]
 
     def feet_inside_roi(self, landmark_array):
         """両足が指定領域内にあるかを判定"""
@@ -249,7 +232,7 @@ class EventDetector:
     def point_inside_clear_roi(self, point):
         """`cv2.pointPolygonTest`により、pointがクリア領域内にあるかを判定"""
         return (
-            cv.pointPolygonTest(self.clear_roi_points, (point[0], point[1]), False) >= 0
+                cv.pointPolygonTest(self.clear_roi_points, (point[0], point[1]), False) >= 0
         )
 
     def get_point(self, landmark_array, name):
