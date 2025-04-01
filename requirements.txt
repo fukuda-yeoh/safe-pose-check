@@ -10,7 +10,7 @@ fonttools==4.53.1
 iniconfig==2.0.0
 jax==0.4.33
 jaxlib==0.4.33
-Jinja2==3.1.4
+Jinja2==3.1.6
 kiwisolver==1.4.7
 MarkupSafe==3.0.0
 matplotlib==3.9.2
