@@ -86,10 +86,8 @@ while True:
         )
         event_detector.update_scores(params)  # スコアを更新
         annotated_image = draw_landmarks_on_image(annotated_image, pose_landmarks_list)
-        # 多角形ROI領域を描画（EventDetector内で既に描画されているため不要かもしれません）
-        final_frame = annotated_image.copy()  # コピーを作成し書き込み可能にする
-        # `EventDetector` 内で `draw_roi` と `draw_reset_roi` が呼び出されているため、再度描画する必要はありません
-        # final_frame = event_detector.draw_roi(final_frame)  # 省略可能
+        # 多角形ROI領域を描画
+        final_frame = annotated_image.copy()
 
     else:
         final_frame = mp_image.numpy_view()

@@ -12,6 +12,7 @@ from components import (
     RecognitionThread,
     RecordWorker,
     EventDetector,
+    EventState,
     DisplayFrame,
 )
 from defs import project_root
@@ -26,19 +27,30 @@ print("Open Port")
 # カメラ行列と歪み係数
 camera_matrix = np.array(
     [
-        [351.9290561348966, 0.0, 298.3513697484476],
-        [0.0, 352.1495854985107, 253.05986140830382],
-        [0.0, 0.0, 1.0],
+        [
+            359.60126359570563,
+            0.0,
+            298.67824646996394
+        ],
+        [
+            0.0,
+            361.0578929901831,
+            250.78626701590608
+        ],
+        [
+            0.0,
+            0.0,
+            1.0
+        ],
     ]
 )
 
 dist_coeffs = np.array(
     [
-        -0.34608022240656927,
-        0.19328485034266574,
-        -0.0018393529638328536,
-        -0.0001033797184861087,
-        -0.0808648542111161,
+        -0.046472287345238956,
+        0.04685134556842647,
+        -0.0653804465562841,
+        0.032106609308392015,
     ],
     dtype=np.float32,
 )  # 例
@@ -59,8 +71,8 @@ is_recording = False
 
 event_detector = EventDetector(
     landmark_labels,
-    roi_points=[(0.15, 0.72), (0.17, 0.845), (0.68, 0.71), (0.63, 0.62)],
-    clear_roi_points=[(0.17, 0.845), (0.195, 1), (0.87, 1), (0.68, 0.71)],
+    roi_points=[(0.30, 0.53), (0.30, 0.70), (0.70, 0.70), (0.70, 0.53)],
+    clear_roi_points=[(0.30, 0.70), (0.30, 1), (0.70, 1), (0.70, 0.70)],
 )
 detector_thread = Thread(
     target=event_detector.run_in_thread, args=(recognition_thread.out_queue,)
@@ -90,6 +102,10 @@ while True:
             event_detected = True  # イベントが発生した
 
     display_frame.update_display()
+
+    if event_detector.state == EventState.EXITED_ROI :
+        event_detector.reset()
+        display_frame.clear_all_dynamic_img()
 
     if is_recording:
         recorder.record_data(

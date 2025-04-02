@@ -200,15 +200,28 @@ class EventDetector:
                         event["crop"] = self.crop_event(frame, center)
 
     def crop_event(self, frame, center):
-        return frame[
-               int(center[1] - self.crop_size[1] / 2): int(
-                   center[1] + self.crop_size[1] / 2
-               ),
-               int(center[0] - self.crop_size[0] / 2): int(
-                   center[0] + self.crop_size[0] / 2
-               ),
+        x_start = int(center[0] - self.crop_size[0] / 2)
+        x_end = int(center[0] + self.crop_size[0] / 2)
+        y_start = int(center[1] - self.crop_size[1] / 2)
+        y_end = int(center[1] + self.crop_size[1] / 2)
+        if x_start < 0:
+            x_end += abs(x_start)
+            x_start = 0
+        if y_start < 0:
+            y_end += abs(y_start)
+            y_start = 0
+        if x_end > 640:
+            x_start -= (x_end - 320)
+            x_end = 320
+        if y_end > 480:
+            y_start -= (y_end - 240)
+            y_end = 240
+        cropped_frame = frame[
+               int(y_start): int(y_end),
+               int(x_start): int(x_end),
                :,
                ]
+        return cropped_frame
 
     def feet_inside_roi(self, landmark_array):
         """両足が指定領域内にあるかを判定"""
@@ -300,7 +313,7 @@ class EventDetector:
     def get_angle_vector(vec):
         """vecの水平成分を計算(正規化含む)"""
         # ROIで定義された方向ベクトルの取得
-        roi_vec = np.array([0.39939338, -0.00622076, 0.02112389])
+        roi_vec = np.array([0.39939338, -0.00622076,  0.02112389])
         vec_scale = np.linalg.norm(vec)
         roi_vec_scale = np.linalg.norm(roi_vec)
 
