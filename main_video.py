@@ -16,7 +16,7 @@ PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
 
 # パスの設定
-sample_video = project_root() / "sample_data" / "C" / "case1" / "No9.mp4"
+sample_video = project_root() / "sample_data" / "C" / "case1" / "No1.mp4"
 model_path = project_root() / "models" / "pose_landmarker_heavy.task"
 landmarks_def_path = project_root() / "models" / "landmarks.txt"
 save_dir = project_root() / "record"
@@ -63,7 +63,7 @@ recorder.start_record(sample_video.stem, frame.shape)
 
 #  COMポートを開く
 print("Open Port")
-ser = serial.Serial("COM3", 9600)
+# ser = serial.Serial("COM3", 9600)
 while True:
     ret, frame = cap.read()
     if not ret:
@@ -126,12 +126,12 @@ while True:
     events_performed = [x["detected"] for x in event_detector.events.values()]
     if detection_completed is False and all(events_performed):
         print("OK!")
-        ser.write(b"1")
+        # ser.write(b"1")
         detection_completed = True
 
     if event_detector.state == EventState.EXITED_ROI and detection_completed is False:
         print("NG!")
-        ser.write(b"0")
+        # ser.write(b"0")
         detection_completed = True
 
     if event_detector.state == EventState.EXITED_ROI and detection_completed is True:
@@ -146,4 +146,4 @@ cv.destroyAllWindows()
 recorder.end_record()
 cap.release()
 print("Close Port")
-ser.close()
+# ser.close()

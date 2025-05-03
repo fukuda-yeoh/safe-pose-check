@@ -56,7 +56,7 @@ dist_coeffs = np.array(
 )  # 例
 
 # カメラを開く
-model_path = project_root() / "models" / "pose_landmarker_full.task"
+model_path = project_root() / "models" / "pose_landmarker_lite.task"
 landmarks_def_path = project_root() / "models" / "landmarks.txt"
 save_dir = project_root() / "record"
 save_dir.mkdir(exist_ok=True)
@@ -91,7 +91,6 @@ while True:
         params,
         events,
     ) = event_detector.out_queue.get()
-
 
     display_frame.set_dynamic_img("Camera", final_frame)
     event_detected = False  # イベント発生フラグ
