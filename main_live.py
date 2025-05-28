@@ -79,10 +79,10 @@ while True:
     display_frame.set_dynamic_img("Camera", final_frame)
     event_detected = False  # イベント発生フラグ
 
-    for name, event in events.items():
-        if event["crop"] is not None:
-            display_frame.set_dynamic_img(name, event["crop"])
-            event_detected = True  # イベントが発生した
+    # for name, event in events.items():
+    # if event["crop"] is not None:
+    # display_frame.set_dynamic_img(name, event["crop"])
+    # event_detected = True  # イベントが発生した
 
     display_frame.update_display()
 
