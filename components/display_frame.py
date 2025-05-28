@@ -4,19 +4,20 @@ import numpy as np
 
 class DisplayFrame:
     def __init__(self):
-        self.base_frame = self._generate_base_frame()
+        # ベースフレームの生成は不要になります
+        # self.base_frame = self._generate_base_frame()
         self.dynamic_frames = {
-            "Camera": [None, (455, 400, 3840, 2160)],
-            # "Look Left": [None, (810, 100, 100, 100)],
-            # "Look Right": [None, (970, 100, 100, 100)],
-            # "Point Left": [None, (810, 300, 100, 100)],
-            # "Point Right": [None, (970, 300, 100, 100)],
+            "Camera": [None, (0, 0, 0, 0)],  # カメラ映像のサイズと位置は動的に設定するため、初期値は0
+            "Image1": [None, (10, 10, 200, 200)],  # カメラ映像の左上に表示する例
+            "Image2": [None, (220, 10, 200, 200)],  # カメラ映像の右上に表示する例
         }
-        self.display_frame = self.base_frame
+        self.display_frame = None  # 初期表示フレームはNoneに
 
-    def set_dynamic_img(self, key, frame):
+    def set_dynamic_img(self, key, frame, pos_params=None):
         if key in self.dynamic_frames:
             self.dynamic_frames[key][0] = frame
+            if pos_params:  # 位置とサイズが指定された場合のみ更新
+                self.dynamic_frames[key][1] = pos_params
 
     def clear_dynamic_img(self, key):
         if key in self.dynamic_frames:
@@ -27,19 +28,28 @@ class DisplayFrame:
             self.dynamic_frames[key][0] = None
 
     def update_display(self):
-        self.display_frame = self.base_frame.copy()
-        for img, params in self.dynamic_frames.values():
-            if img is not None:
-                self._paste(self.display_frame, img, *params)
+        # 'Camera' キーの画像がNoneでないことを確認
+        camera_frame_data = self.dynamic_frames.get("Camera")
+        if camera_frame_data and camera_frame_data[0] is not None:
+            camera_frame = camera_frame_data[0]
+            # カメラ映像をdisplay_frameのベースとして使用
+            self.display_frame = camera_frame.copy()
+
+            # カメラ映像以外の動的画像を貼り付け
+            for key, (img, params) in self.dynamic_frames.items():
+                if key != "Camera" and img is not None:  # カメラ映像以外を貼り付け
+                    self._paste(self.display_frame, img, *params)
+        else:
+            # カメラ映像がない場合は、黒い画面を表示するか、何もしないか選択
+            # 今回は、カメラ映像がない場合はNoneのままにする
+            self.display_frame = None
+
         return self.display_frame
 
-    def _generate_base_frame(self):
-        frame = np.zeros((3840, 2160, 3), dtype=np.uint8)
-        # self._draw_heading_text(frame, "Look Left", (810, 90))
-        # self._draw_heading_text(frame, "Look Right", (970, 90))
-        # self._draw_heading_text(frame, "Point Left", (810, 290))
-        # self._draw_heading_text(frame, "Point Right", (970, 290))
-        return frame
+    # _generate_base_frame メソッドは不要になります
+    # def _generate_base_frame(self):
+    #     frame = np.zeros((3840, 2160, 3), dtype=np.uint8)
+    #     return frame
 
     @staticmethod
     def _draw_heading_text(
@@ -63,26 +73,10 @@ class DisplayFrame:
 
     @staticmethod
     def _paste(dst, src, x, y, a, b):
+        # 指定されたサイズにリサイズ
         resized_img = cv.resize(src, (a, b))
 
-        # もし貼り付ける画像が "Camera" であればトリミングを適用
-        # ここでは、resized_img の幅が 768px、高さが 432px であることを前提としています。
-        if resized_img.shape[1] == 3840 and resized_img.shape[0] == 2160:
-            trim_start_x = 1250  # トリミング開始X座標
-            trim_end_x = 2500  # トリミング終了X座標
-            # トリミング後の幅を計算
-            trimmed_width = trim_end_x - trim_start_x
-            # 実際に貼り付ける部分をトリミング
-            # Y方向は全て、X方向は trim_start_x から trim_end_x まで
-            resized_img = resized_img[:, trim_start_x:trim_end_x]
-
-            # トリミングされた画像の新しい幅に合わせて、貼り付け先の幅を調整
-            # これにより、トリミングされた画像が正しく表示されるようになります。
-            # ただし、これまでのa, bのパラメータは元の768x432を指しているため、
-            # 貼り付け先の幅 (w) もこのtrimmed_widthで計算し直す必要があります。
-            # px, pyはそのまま使用し、w, hはトリミング後のサイズで計算します。
-            a = trimmed_width  # 貼り付け先の幅をトリミング後の幅に更新
-
+        # 貼り付け先の範囲をチェックし、はみ出す部分を調整
         if x >= dst.shape[1] or y >= dst.shape[0]:
             return
 
@@ -100,24 +94,36 @@ class DisplayFrame:
         v = 0 if y >= 0 else min(-y, resized_img.shape[0] - 1)
         px = max(x, 0)
         py = max(y, 0)
+
+        # 貼り付け
+        # resized_img のサイズと貼り付け先のROIのサイズが一致しない可能性があるため、
+        # roi_resized の幅と高さを調整して貼り付けます。
         roi_dst = dst[py : py + h, px : px + w]
         roi_resized = resized_img[v : v + h, u : u + w]
+
+        # サイズが異なる場合は、貼り付け先のROIのサイズに合わせて resized_img を再度リサイズ
+        if (
+            roi_dst.shape[0] != roi_resized.shape[0]
+            or roi_dst.shape[1] != roi_resized.shape[1]
+        ):
+            roi_resized = cv.resize(roi_resized, (roi_dst.shape[1], roi_dst.shape[0]))
+
         roi_dst[:] = roi_resized
 
 
 if __name__ == "__main__":
     display = DisplayFrame()
-    white_img = np.ones((10, 10, 3)) * 255
-    blue_img = np.zeros((10, 10, 3))
+    # テスト用に大きな白い画像と青い画像を準備
+    white_img = np.ones((480, 640, 3), dtype=np.uint8) * 255  # カメラ映像の代わり
+    blue_img = np.zeros((100, 100, 3), dtype=np.uint8)
     blue_img[:, :, 0] = 255
 
-    display.set_dynamic_img("Camera", white_img)
-    # display.set_dynamic_img("Look Left", blue_img)
-    # display.set_dynamic_img("Look Right", blue_img)
-    # display.set_dynamic_img("Point Left", blue_img)
-    # display.set_dynamic_img("Point Right", blue_img)
+    display.set_dynamic_img("Camera", white_img, (0, 0, 640, 480))  # カメラ映像のサイズと位置を設定
+    display.set_dynamic_img("Image1", blue_img)
+    display.set_dynamic_img("Image2", blue_img)
 
     display.update_display()
-    cv.imshow("display", display.display_frame)
-    cv.waitKey(0)
+    if display.display_frame is not None:
+        cv.imshow("display", display.display_frame)
+        cv.waitKey(0)
     cv.destroyAllWindows()

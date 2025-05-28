@@ -67,35 +67,90 @@ recognition_thread.start()
 detector_thread.start()
 camera_thread.start()
 
+# ディスプレイ解像度取得の削除
+# monitor = get_monitors()[0]
+# screen_width = monitor.width
+# screen_height = monitor.height
+# print(f"Detected screen resolution: {screen_width}x{screen_height}")
+
+# OpenCVウィンドウをフルスクリーンに設定
+cv.namedWindow("Video", cv.WINDOW_NORMAL)
+cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
+
 while True:
     (
         frame_timestamp_ms,
-        final_frame,
+        final_frame,  # ここにカメラから取得した元のフレームが入ります
         landmark_array,
         params,
         events,
     ) = event_detector.out_queue.get()
 
-    display_frame.set_dynamic_img("Camera", final_frame)
+    # processed_frame = None # 処理後のフレームを保持する変数は不要に
+
+    if final_frame is not None:
+        # カメラ映像の元のサイズを取得
+        original_h, original_w, _ = final_frame.shape
+
+        # ディスプレイの横幅に合わせてリサイズするロジックを削除
+        # その代わりに、元のフレームサイズをそのままDisplayFrameに渡す
+        display_frame.set_dynamic_img(
+            "Camera", final_frame, (0, 0, original_w, original_h)
+        )
+    else:
+        display_frame.clear_dynamic_img("Camera")  # フレームがNoneの場合はカメラ映像をクリア
+
     event_detected = False  # イベント発生フラグ
 
-    # for name, event in events.items():
-    # if event["crop"] is not None:
-    # display_frame.set_dynamic_img(name, event["crop"])
-    # event_detected = True  # イベントが発生した
+    # イベントクロップ画像を有効にする
+    for name, event in events.items():
+        if event["crop"] is not None:
+            crop_h, crop_w, _ = event["crop"].shape
+
+            # イベント画像をカメラ映像の左上と右上に表示
+            # フルスクリーン表示の場合、これらの座標は画面の左上を基準にする
+            # 例えば、左上のImage1は (10, 10) から (10 + crop_w, 10 + crop_h)
+            # 右上のImage2は (original_w - crop_w - 10, 10) から (original_w - 10, 10 + crop_h)
+            # original_w はフルスクリーン表示されたカメラ映像の幅を指す
+
+            if name == "Look Left":  # 仮の割り当て
+                display_frame.set_dynamic_img(
+                    "Image1", event["crop"], (10, 10, crop_w, crop_h)
+                )
+            elif name == "Look Right":  # 仮の割り当て
+                if final_frame is not None:  # final_frameが存在する場合にのみ計算
+                    image2_x = original_w - crop_w - 10
+                    display_frame.set_dynamic_img(
+                        "Image2", event["crop"], (image2_x, 10, crop_w, crop_h)
+                    )
+                else:
+                    display_frame.clear_dynamic_img("Image2")
+            event_detected = True  # イベントが発生した
+        else:
+            # イベントが検出されなくなったら画像をクリア
+            if name == "Look Left":
+                display_frame.clear_dynamic_img("Image1")
+            elif name == "Look Right":
+                display_frame.clear_dynamic_img("Image2")
 
     display_frame.update_display()
 
     if event_detector.state == EventState.EXITED_ROI:
         event_detector.reset()
-        display_frame.clear_all_dynamic_img()
+        display_frame.clear_all_dynamic_img()  # ROI外に出たら全ての動的画像をクリア
 
     if is_recording:
+        # 録画は元のフレームサイズで行うことを想定
         recorder.record_data(
             frame_timestamp_ms, landmark_array, None, final_frame, params
         )
 
-    cv.imshow(f"Video", display_frame.display_frame)
+    # display_frame.display_frame がNoneでないことを確認
+    if display_frame.display_frame is not None:
+        cv.imshow(f"Video", display_frame.display_frame)
+    else:
+        # カメラ映像がない場合は、何もしない
+        pass
 
     key = cv.waitKey(1)
     if key == ord("q"):
@@ -105,13 +160,21 @@ while True:
         if is_recording:
             recorder.end_record()  # 録画を終了
             is_recording = False  # 録画のフラグを終了
-        recognition_thread.in_queue.put((frame_timestamp_ms + 1, final_frame))
+        # 終了時にrecognition_thread.in_queueにフレームを投入する処理は、
+        # 既にスレッドが停止している可能性があるため、不要であれば削除も検討
+        if final_frame is not None:
+            recognition_thread.in_queue.put((frame_timestamp_ms + 1, final_frame))
         break
     elif key == ord("s"):  # 's' キーが押されたら録画を開始
         if not is_recording:
-            recorder.start_record(f"video{record_count}", final_frame.shape)  # 録画を開始
-            is_recording = True
-            print("録画を開始しました")
+            if final_frame is not None:
+                recorder.start_record(
+                    f"video{record_count}", final_frame.shape
+                )  # 録画を開始
+                is_recording = True
+                print("録画を開始しました")
+            else:
+                print("フレームが利用できないため録画を開始できません。")
     elif key == ord("e"):  # 'e' キーが押されたら録画を終了
         if is_recording:
             recorder.end_record()  # 録画を終了
