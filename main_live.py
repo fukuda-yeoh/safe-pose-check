@@ -20,28 +20,12 @@ from funcs.landmark_funcs import (
     get_landmark_labels,
 )
 
-# シリアル通信の設定
-#  COMポートを開く
-print("Open Port")
-# ser = serial.Serial("COM3", 9600)
 # カメラ行列と歪み係数
 camera_matrix = np.array(
     [
-        [
-            359.60126359570563,
-            0.0,
-            298.67824646996394
-        ],
-        [
-            0.0,
-            361.0578929901831,
-            250.78626701590608
-        ],
-        [
-            0.0,
-            0.0,
-            1.0
-        ],
+        [359.60126359570563, 0.0, 298.67824646996394],
+        [0.0, 361.0578929901831, 250.78626701590608],
+        [0.0, 0.0, 1.0],
     ]
 )
 
@@ -102,7 +86,7 @@ while True:
 
     display_frame.update_display()
 
-    if event_detector.state == EventState.EXITED_ROI :
+    if event_detector.state == EventState.EXITED_ROI:
         event_detector.reset()
         display_frame.clear_all_dynamic_img()
 
@@ -110,12 +94,6 @@ while True:
         recorder.record_data(
             frame_timestamp_ms, landmark_array, None, final_frame, params
         )
-
-    # シリアル通信: イベント発生時 "1" を送信、それ以外は "0"
-    # if event_detected:
-    # ser.write(b"1")
-    # else:
-    # ser.write(b"0")
 
     cv.imshow(f"Video", display_frame.display_frame)
 
@@ -143,5 +121,3 @@ while True:
 
 # 終了処理
 cv.destroyAllWindows()
-# ser.close()  # シリアルポートを閉じる
-print("Close Port")
