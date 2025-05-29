@@ -6,6 +6,7 @@ os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 import cv2 as cv
 import numpy as np
 from threading import Thread
+from screeninfo import get_monitors  # 再追加
 
 from components import (
     CameraThread,
@@ -40,7 +41,7 @@ dist_coeffs = np.array(
 )  # 例
 
 # カメラを開く
-model_path = project_root() / "models" / "pose_landmarker_lite.task"
+model_path = project_root() / "models" / "pose_landmarker_full.task"
 landmarks_def_path = project_root() / "models" / "landmarks.txt"
 save_dir = project_root() / "record"
 save_dir.mkdir(exist_ok=True)
@@ -67,15 +68,38 @@ recognition_thread.start()
 detector_thread.start()
 camera_thread.start()
 
-# ディスプレイ解像度取得の削除
-# monitor = get_monitors()[0]
-# screen_width = monitor.width
-# screen_height = monitor.height
-# print(f"Detected screen resolution: {screen_width}x{screen_height}")
+# --- ディスプレイの自動検出とウィンドウ設定の変更点 ---
+monitors = get_monitors()
+target_monitor = None
 
-# OpenCVウィンドウをフルスクリーンに設定
+if len(monitors) > 1:
+    # 複数モニターがある場合、メインディスプレイ以外の最も広いモニターをサイネージと仮定
+    secondary_monitors = [m for m in monitors if not m.is_primary]
+    if secondary_monitors:
+        target_monitor = max(secondary_monitors, key=lambda m: m.width * m.height)
+    else:
+        # メインディスプレイしか二次モニターがない場合
+        target_monitor = monitors[0]
+else:
+    # モニターが1つしかない場合、それをターゲットとする
+    target_monitor = monitors[0]
+
+# ターゲットモニターの幅と高さを取得
+display_width = target_monitor.width
+display_height = target_monitor.height
+display_x = target_monitor.x
+display_y = target_monitor.y
+
+# OpenCVウィンドウをターゲットモニターに移動し、フルスクリーンに設定
 cv.namedWindow("Video", cv.WINDOW_NORMAL)
 cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
+cv.moveWindow("Video", display_x, display_y)
+
+print(
+    f"Displaying on monitor at ({display_x}, {display_y}) with resolution {display_width}x{display_height}"
+)
+# --- 変更点ここまで ---
+
 
 while True:
     (
@@ -86,70 +110,126 @@ while True:
         events,
     ) = event_detector.out_queue.get()
 
-    # processed_frame = None # 処理後のフレームを保持する変数は不要に
-
     if final_frame is not None:
-        # カメラ映像の元のサイズを取得
         original_h, original_w, _ = final_frame.shape
 
-        # ディスプレイの横幅に合わせてリサイズするロジックを削除
-        # その代わりに、元のフレームサイズをそのままDisplayFrameに渡す
+        # カメラ映像をターゲットディスプレイの解像度にリサイズ
+        frame_aspect_ratio = original_w / original_h
+        display_aspect_ratio = display_width / display_height
+
+        if frame_aspect_ratio > display_aspect_ratio:
+            # カメラ映像が画面より横長の場合、幅に合わせて調整
+            display_camera_w = display_width
+            display_camera_h = int(display_width / frame_aspect_ratio)
+        else:
+            # カメラ映像が画面より縦長の場合、高さに合わせて調整
+            display_camera_h = display_height
+            display_camera_w = int(display_height * frame_aspect_ratio)
+
+        # 画面中央に表示されるようにオフセットを計算 (Image1/Image2の配置に影響)
+        offset_x = (display_width - display_camera_w) // 2
+        offset_y = (display_height - display_camera_h) // 2
+
         display_frame.set_dynamic_img(
-            "Camera", final_frame, (0, 0, original_w, original_h)
+            "Camera",
+            final_frame,
+            (offset_x, offset_y, display_camera_w, display_camera_h),
         )
     else:
-        display_frame.clear_dynamic_img("Camera")  # フレームがNoneの場合はカメラ映像をクリア
+        display_frame.clear_dynamic_img("Camera")
 
-    event_detected = False  # イベント発生フラグ
+    # 各イベントの検出状態を保持するフラグ
+    look_left_detected = False
+    point_left_detected = False
+    look_right_detected = False
+    point_right_detected = False
 
-    # イベントクロップ画像を有効にする
+    # イベントの検出状態を更新
     for name, event in events.items():
-        if event["crop"] is not None:
-            crop_h, crop_w, _ = event["crop"].shape
+        if event["detected"]:
+            if name == "Look Left":
+                look_left_detected = True
+            elif name == "Point Left":
+                point_left_detected = True
+            elif name == "Look Right":
+                look_right_detected = True
+            elif name == "Point Right":
+                point_right_detected = True
 
-            # イベント画像をカメラ映像の左上と右上に表示
-            # フルスクリーン表示の場合、これらの座標は画面の左上を基準にする
-            # 例えば、左上のImage1は (10, 10) から (10 + crop_w, 10 + crop_h)
-            # 右上のImage2は (original_w - crop_w - 10, 10) から (original_w - 10, 10 + crop_h)
-            # original_w はフルスクリーン表示されたカメラ映像の幅を指す
-
-            if name == "Look Left":  # 仮の割り当て
+    # Image1の表示条件: Look Left と Point Left の両方が検出された場合
+    if look_left_detected and point_left_detected:
+        image1_path = project_root() / "Image" / "Leftcheck.png"
+        if image1_path.exists():
+            img1 = cv.imread(str(image1_path))
+            if img1 is not None:
+                display_width_image1 = 200  # 例: 幅 200px
+                display_height_image1 = 600  # 例: 高さ 200px
+                # 画面オフセットを考慮してImage1の表示位置を調整
                 display_frame.set_dynamic_img(
-                    "Image1", event["crop"], (10, 10, crop_w, crop_h)
+                    "Image1",
+                    img1,
+                    (
+                        300,
+                        1200,
+                        display_width_image1,
+                        display_height_image1,
+                    ),
                 )
-            elif name == "Look Right":  # 仮の割り当て
-                if final_frame is not None:  # final_frameが存在する場合にのみ計算
-                    image2_x = original_w - crop_w - 10
+            else:
+                print(f"Warning: Image1 file not loaded: {image1_path}")
+                display_frame.clear_dynamic_img("Image1")
+        else:
+            print(f"Warning: Image1 file not found: {image1_path}")
+            display_frame.clear_dynamic_img("Image1")
+    else:
+        display_frame.clear_dynamic_img("Image1")
+
+    # Image2の表示条件: Look Right と Point Right の両方が検出された場合
+    if look_right_detected and point_right_detected:
+        image2_path = project_root() / "Image" / "Rightcheck.png"
+        if image2_path.exists():
+            img2 = cv.imread(str(image2_path))
+            if img2 is not None:
+                if final_frame is not None:
+                    display_width_image2 = 200  # 例: 幅 200px
+                    display_height_image2 = 600  # 例: 高さ 200px
+                    # 画面オフセットとカメラ映像の幅を考慮してImage2の表示位置を調整
+                    image2_x = offset_x + display_camera_w - display_width_image2 - 10
                     display_frame.set_dynamic_img(
-                        "Image2", event["crop"], (image2_x, 10, crop_w, crop_h)
+                        "Image2",
+                        img2,
+                        (
+                            1800,
+                            1200,
+                            display_width_image2,
+                            display_height_image2,
+                        ),
                     )
                 else:
                     display_frame.clear_dynamic_img("Image2")
-            event_detected = True  # イベントが発生した
-        else:
-            # イベントが検出されなくなったら画像をクリア
-            if name == "Look Left":
-                display_frame.clear_dynamic_img("Image1")
-            elif name == "Look Right":
+            else:
+                print(f"Warning: Image2 file not loaded: {image2_path}")
                 display_frame.clear_dynamic_img("Image2")
+        else:
+            print(f"Warning: Image2 file not found: {image2_path}")
+            display_frame.clear_dynamic_img("Image2")
+    else:
+        display_frame.clear_dynamic_img("Image2")
 
     display_frame.update_display()
 
     if event_detector.state == EventState.EXITED_ROI:
         event_detector.reset()
-        display_frame.clear_all_dynamic_img()  # ROI外に出たら全ての動的画像をクリア
+        display_frame.clear_all_dynamic_img()
 
     if is_recording:
-        # 録画は元のフレームサイズで行うことを想定
         recorder.record_data(
             frame_timestamp_ms, landmark_array, None, final_frame, params
         )
 
-    # display_frame.display_frame がNoneでないことを確認
     if display_frame.display_frame is not None:
         cv.imshow(f"Video", display_frame.display_frame)
     else:
-        # カメラ映像がない場合は、何もしない
         pass
 
     key = cv.waitKey(1)
@@ -158,26 +238,22 @@ while True:
         camera_thread.stop()
         event_detector.stop_thread()
         if is_recording:
-            recorder.end_record()  # 録画を終了
-            is_recording = False  # 録画のフラグを終了
-        # 終了時にrecognition_thread.in_queueにフレームを投入する処理は、
-        # 既にスレッドが停止している可能性があるため、不要であれば削除も検討
+            recorder.end_record()
+            is_recording = False
         if final_frame is not None:
             recognition_thread.in_queue.put((frame_timestamp_ms + 1, final_frame))
         break
-    elif key == ord("s"):  # 's' キーが押されたら録画を開始
+    elif key == ord("s"):
         if not is_recording:
             if final_frame is not None:
-                recorder.start_record(
-                    f"video{record_count}", final_frame.shape
-                )  # 録画を開始
+                recorder.start_record(f"video{record_count}", final_frame.shape)
                 is_recording = True
                 print("録画を開始しました")
             else:
                 print("フレームが利用できないため録画を開始できません。")
-    elif key == ord("e"):  # 'e' キーが押されたら録画を終了
+    elif key == ord("e"):
         if is_recording:
-            recorder.end_record()  # 録画を終了
+            recorder.end_record()
             is_recording = False
             record_count += 1
             print("録画を終了しました")

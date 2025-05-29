@@ -23,10 +23,10 @@ class EventState(Enum):
 
 class EventDetector:
     def __init__(
-            self,
-            landmark_labels,
-            roi_points,
-            clear_roi_points,
+        self,
+        landmark_labels,
+        roi_points,
+        clear_roi_points,
     ):
         self.labels = landmark_labels
         self.roi_points = np.array(roi_points, dtype=np.float32)  # メインROIの頂点座標
@@ -211,16 +211,16 @@ class EventDetector:
             y_end += abs(y_start)
             y_start = 0
         if x_end > 640:
-            x_start -= (x_end - 320)
+            x_start -= x_end - 320
             x_end = 320
         if y_end > 480:
-            y_start -= (y_end - 240)
+            y_start -= y_end - 240
             y_end = 240
         cropped_frame = frame[
-               int(y_start): int(y_end),
-               int(x_start): int(x_end),
-               :,
-               ]
+            int(y_start) : int(y_end),
+            int(x_start) : int(x_end),
+            :,
+        ]
         return cropped_frame
 
     def feet_inside_roi(self, landmark_array):
@@ -245,7 +245,7 @@ class EventDetector:
     def point_inside_clear_roi(self, point):
         """`cv2.pointPolygonTest`により、pointがクリア領域内にあるかを判定"""
         return (
-                cv.pointPolygonTest(self.clear_roi_points, (point[0], point[1]), False) >= 0
+            cv.pointPolygonTest(self.clear_roi_points, (point[0], point[1]), False) >= 0
         )
 
     def get_point(self, landmark_array, name):
@@ -313,7 +313,7 @@ class EventDetector:
     def get_angle_vector(vec):
         """vecの水平成分を計算(正規化含む)"""
         # ROIで定義された方向ベクトルの取得
-        roi_vec = np.array([0.39939338, -0.00622076,  0.02112389])
+        roi_vec = np.array([1, 0, 0])
         vec_scale = np.linalg.norm(vec)
         roi_vec_scale = np.linalg.norm(roi_vec)
 
