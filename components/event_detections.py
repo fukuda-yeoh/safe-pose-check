@@ -1,3 +1,5 @@
+# event_detections.py
+
 from enum import Enum
 from queue import Queue
 
@@ -23,13 +25,13 @@ class EventState(Enum):
 
 class EventDetector:
     def __init__(
-            self,
-            landmark_labels,
-            roi_points,
-            clear_roi_points,
+        self,
+        landmark_labels,
+        roi_points,
+        clear_roi_points,
     ):
         self.labels = landmark_labels
-        self.roi_points = np.array(roi_points, dtype=np.float32)  # メインROIの頂点座標
+        self.roi_points = np.array(roi_points, dtype=np.float32)
         self.clear_roi_points = np.array(clear_roi_points, dtype=np.float32)
         self.crop_size = (200, 200)
         self.direction_vec = np.array([1, 0, 0])
@@ -41,7 +43,8 @@ class EventDetector:
             "mid ankle": self.get_ankle_midpoint,
         }
 
-        self.events = self.default_event()
+        self.events = self._create_event_structure()
+
         self.state = EventState.NO_PERSON
         self.in_queue = Queue()
         self.out_queue = Queue()
@@ -53,20 +56,21 @@ class EventDetector:
             "PL_score": 0,
             "PR_score": 0,
         }
+        self.tracking_id = None
+        self.current_person_landmark_array = None
 
-    def reset(self):
-        self.events = self.default_event()
-        self.scores = {key: 0 for key in self.scores}
+        # ROIの中心点を計算
+        self.roi_center_x = np.mean(self.roi_points[:, 0])
+        self.roi_center_y = np.mean(self.roi_points[:, 1])
 
     @staticmethod
-    def default_event():
+    def _create_event_structure():
         return {
             "Look Left": {
                 "param": "head",
                 "landmark": "nose",
                 "conditional": "25 > param > 0",
                 "previous": 0,
-                "crop": None,
                 "detected": False,
             },
             "Look Right": {
@@ -74,7 +78,6 @@ class EventDetector:
                 "landmark": "nose",
                 "conditional": "param > 155",
                 "previous": 0,
-                "crop": None,
                 "detected": False,
             },
             "Point Left": {
@@ -82,7 +85,6 @@ class EventDetector:
                 "landmark": "right wrist",
                 "conditional": "param > 0.6 and 25 > params['forearm'] > 0",
                 "previous": 0,
-                "crop": None,
                 "detected": False,
             },
             "Point Right": {
@@ -90,17 +92,14 @@ class EventDetector:
                 "landmark": "right wrist",
                 "conditional": "param > 0.6 and params['forearm'] > 155",
                 "previous": 0,
-                "crop": None,
                 "detected": False,
             },
         }
 
     def update_scores(self, params):
-        # ROI内に存在するか
         if not params.get("in_roi", False):
             return
 
-        # headのスコア計算
         self.scores["LL_score"] = max(
             self.scores["LL_score"], calculate_score_l(params["head"], 25, 90)
         )
@@ -108,7 +107,6 @@ class EventDetector:
             self.scores["LR_score"], calculate_score_r(params["head"], 90, 155)
         )
 
-        # forearmのスコア計算
         if params["arm_high"] > 0.6:
             self.scores["PL_score"] = max(
                 self.scores["PL_score"], calculate_score_l(params["forearm"], 25, 90)
@@ -120,47 +118,152 @@ class EventDetector:
     def run_in_thread(self, in_queue):
         while not self.stop_flag:
             result, timestamp, frame = in_queue.get()
-            if pose_landmarks_list := result.pose_landmarks:
-                landmark_array = landmarks_to_array(pose_landmarks_list)
-                params, annotated_image, events = self.run(landmark_array, frame)
 
-                self.update_scores(params)  # スコアを更新
+            for name in self.events:
+                self.events[name]["detected"] = False
 
-                annotated_image = draw_landmarks_on_image(
-                    annotated_image, pose_landmarks_list
-                )
-                annotated_image = self.draw_roi(
-                    annotated_image,
-                )
-                frame = annotated_image
-                events = self.events
+            pose_landmarks_list = result.pose_landmarks
+
+            if pose_landmarks_list:
+                closest_person_idx = -1
+                min_distance_to_center = float("inf")
+
+                # まず、tracking_idが設定されている場合はその人物を優先的に探す
+                if (
+                    self.tracking_id is not None
+                    and result.segmentation_masks is not None
+                ):
+                    for idx, mask in enumerate(result.segmentation_masks):
+                        # tracking_idはMediaPipeのバージョンや設定によってsegmentation_masksに含まれない場合があります。
+                        # もしtracking_idが取得できない場合、このロジックはスキップされます。
+                        if (
+                            hasattr(mask, "tracking_id")
+                            and mask.tracking_id == self.tracking_id
+                        ):
+                            closest_person_idx = idx
+                            # 既存のtracking_idの人物が見つかった場合、その人物を優先
+                            break
+
+                # tracking_idの人物が見つからない場合、またはtracking_idがNoneの場合、
+                # ROIの中心に最も近い人物を探す
+                if closest_person_idx == -1:
+                    for idx, landmarks in enumerate(pose_landmarks_list):
+                        landmark_array_temp = landmarks_to_array([landmarks])
+
+                        # 両足首の中点の位置を取得
+                        mid_ankle_point = self.get_ankle_midpoint(landmark_array_temp)
+
+                        # ROIの中心と足首の中点とのユークリッド距離を計算
+                        distance = np.sqrt(
+                            (mid_ankle_point[0] - self.roi_center_x) ** 2
+                            + (mid_ankle_point[1] - self.roi_center_y) ** 2
+                        )
+
+                        # ROI内にいる人物の中で、最も中心に近い人物を選ぶ
+                        if (
+                            self.feet_inside_roi(landmark_array_temp)
+                            and distance < min_distance_to_center
+                        ):
+                            min_distance_to_center = distance
+                            closest_person_idx = idx
+                        # ROI内に人物がいない場合でも、まずはClear ROIにいる人物の中から選ぶ
+                        elif (
+                            not self.feet_inside_roi(landmark_array_temp)
+                            and self.feet_inside_clear_roi(landmark_array_temp)
+                            and distance < min_distance_to_center
+                        ):
+                            min_distance_to_center = distance
+                            closest_person_idx = idx
+                        # どちらにもいない場合は、距離のみで判断（ただし、この人物は判定対象にならない）
+                        elif (
+                            not self.feet_inside_roi(landmark_array_temp)
+                            and not self.feet_inside_clear_roi(landmark_array_temp)
+                            and distance < min_distance_to_center
+                        ):
+                            min_distance_to_center = distance
+                            closest_person_idx = idx
+
+                if closest_person_idx != -1:
+                    selected_landmarks = pose_landmarks_list[closest_person_idx]
+                    self.current_person_landmark_array = landmarks_to_array(
+                        [selected_landmarks]
+                    )
+
+                    # tracking_idを更新（segmentation_masksから取得できる場合）
+                    if result.segmentation_masks and hasattr(
+                        result.segmentation_masks[closest_person_idx], "tracking_id"
+                    ):
+                        self.tracking_id = result.segmentation_masks[
+                            closest_person_idx
+                        ].tracking_id
+                    else:
+                        self.tracking_id = None
+
+                    params, annotated_image = self.run(
+                        self.current_person_landmark_array, frame
+                    )
+                    self.update_scores(params)
+
+                    annotated_image = draw_landmarks_on_image(
+                        annotated_image, pose_landmarks_list
+                    )
+                    annotated_image = self.draw_roi(annotated_image)
+                    frame = annotated_image
+                    events_for_output = {
+                        k: v["detected"] for k, v in self.events.items()
+                    }
+                else:
+                    frame = self.draw_roi(frame)
+                    self.current_person_landmark_array = None
+                    self.tracking_id = None
+                    params = None
+                    events_for_output = {name: False for name in self.events}
             else:
-                frame = self.draw_roi(
-                    frame,
-                )
-                landmark_array = None
+                frame = self.draw_roi(frame)
+                self.current_person_landmark_array = None
+                self.tracking_id = None
                 params = None
-                events = {}
+                events_for_output = {name: False for name in self.events}
 
-            self.out_queue.put((timestamp, frame, landmark_array, params, events))
+            self.out_queue.put(
+                (
+                    timestamp,
+                    frame,
+                    self.current_person_landmark_array,
+                    params,
+                    events_for_output,
+                )
+            )
 
     def run(self, landmark_array, frame=None):
-        # メインROI内か判定
+        if landmark_array is None:
+            params = {
+                "in_roi": False,
+                "head": 0,
+                "forearm": 0,
+                "arm_high": 0,
+            }
+            if frame is not None:
+                frame = self.draw_roi(frame)
+                frame = self.draw_clear_roi(frame)
+            return params, frame
+
         in_roi = self.feet_inside_roi(landmark_array)
         in_clear_roi = self.feet_inside_clear_roi(landmark_array)
+
         if in_roi:
             self.state = EventState.ENTERED_ROI
-        elif in_clear_roi:
+        elif in_clear_roi and self.state == EventState.ENTERED_ROI:
             self.state = EventState.EXITED_ROI
+        elif not in_roi and not in_clear_roi:
+            self.state = EventState.NO_PERSON
 
         eye_vec = self.get_vector(landmark_array, "left eye", "right eye")
         down_vec = self.get_vector(landmark_array, "mid eye", "mid mouth")
 
-        # head vector
         head_vec = self.cross_vector(eye_vec, down_vec)
         head_vec_angle = self.get_angle_vector(head_vec)
 
-        # forearm vector
         forearm_vec = self.get_vector(landmark_array, "right elbow", "right wrist")
         forearm_vec_angle = self.get_angle_vector(forearm_vec)
 
@@ -175,7 +278,7 @@ class EventDetector:
         }
 
         if in_roi:
-            self.check_events(params, landmark_array, frame)
+            self.check_events(params)
 
         if frame is not None:
             frame = self.draw_roi(frame)
@@ -183,59 +286,37 @@ class EventDetector:
             frame = self.draw_vector(frame, landmark_array, "nose", head_vec)
             frame = self.draw_vector(frame, landmark_array, "right elbow", forearm_vec)
 
-        return params, frame, self.events
+        return params, frame
 
-    def check_events(self, params, landmark_array, frame=None):
-        for name, event in self.events.items():
-            param = params[event["param"]]
-            if eval(event["conditional"]):
-                event["detected"] = True
-                if abs(param) > event["previous"]:
-                    event["previous"] = param
-                    if frame is not None:
-                        height, width, _ = frame.shape
-                        center = self.get_point(landmark_array, event["landmark"])
-                        center[0] *= width
-                        center[1] *= height
-                        event["crop"] = self.crop_event(frame, center)
+    # ここから check_events メソッド
+    def check_events(self, params):
+        for name, event_def in self.events.items():
+            param = params[event_def["param"]]
+            if eval(event_def["conditional"]):
+                event_def["detected"] = True
 
-    def crop_event(self, frame, center):
-        x_start = int(center[0] - self.crop_size[0] / 2)
-        x_end = int(center[0] + self.crop_size[0] / 2)
-        y_start = int(center[1] - self.crop_size[1] / 2)
-        y_end = int(center[1] + self.crop_size[1] / 2)
-        if x_start < 0:
-            x_end += abs(x_start)
-            x_start = 0
-        if y_start < 0:
-            y_end += abs(y_start)
-            y_start = 0
-        if x_end > 640:
-            x_start -= (x_end - 320)
-            x_end = 320
-        if y_end > 480:
-            y_start -= (y_end - 240)
-            y_end = 240
-        cropped_frame = frame[
-               int(y_start): int(y_end),
-               int(x_start): int(x_end),
-               :,
-               ]
-        return cropped_frame
-
+    # ここから feet_inside_roi メソッド
     def feet_inside_roi(self, landmark_array):
-        """両足が指定領域内にあるかを判定"""
+        if (
+            landmark_array is None
+            or "left ankle" not in self.labels
+            or "right ankle" not in self.labels
+        ):
+            return False
         left_ankle = self.get_point(landmark_array, "left ankle")
         right_ankle = self.get_point(landmark_array, "right ankle")
         return self.point_inside_roi(left_ankle) and self.point_inside_roi(right_ankle)
 
     def point_inside_roi(self, point):
-        # `cv2.pointPolygonTest`により、pointが多角形内にあるかどうかを判定
-        # 戻り値が1.0の場合は内側、-1.0の場合は外側
         return cv.pointPolygonTest(self.roi_points, (point[0], point[1]), False) >= 0
 
     def feet_inside_clear_roi(self, landmark_array):
-        """両足がクリア領域内にあるかを判定"""
+        if (
+            landmark_array is None
+            or "left ankle" not in self.labels
+            or "right ankle" not in self.labels
+        ):
+            return False
         left_ankle = self.get_point(landmark_array, "left ankle")
         right_ankle = self.get_point(landmark_array, "right ankle")
         return self.point_inside_clear_roi(left_ankle) or self.point_inside_clear_roi(
@@ -243,77 +324,62 @@ class EventDetector:
         )
 
     def point_inside_clear_roi(self, point):
-        """`cv2.pointPolygonTest`により、pointがクリア領域内にあるかを判定"""
         return (
-                cv.pointPolygonTest(self.clear_roi_points, (point[0], point[1]), False) >= 0
+            cv.pointPolygonTest(self.clear_roi_points, (point[0], point[1]), False) >= 0
         )
 
     def get_point(self, landmark_array, name):
-        """指定した特徴点の骨格情報を取得"""
         if name in self.labels:
             return get_pos_array(landmark_array, self.labels, name)[:3].copy()
         elif name in self.virtual_points:
             return self.virtual_points[name](landmark_array)
 
     def get_shoulder_midpoint(self, landmark_array):
-        """右肩と左肩の中点を計算"""
         left_shoulder = self.get_point(landmark_array, "left shoulder")
         right_shoulder = self.get_point(landmark_array, "right shoulder")
         return (left_shoulder + right_shoulder) / 2
 
     def get_eye_midpoint(self, landmark_array):
-        """右目と左目の中点を計算"""
         left_eye = self.get_point(landmark_array, "left eye")
         right_eye = self.get_point(landmark_array, "right eye")
         return (left_eye + right_eye) / 2
 
     def get_mouth_midpoint(self, landmark_array):
-        """右口と左口の中点を計算"""
         left_mouth = self.get_point(landmark_array, "mouth (left)")
         right_mouth = self.get_point(landmark_array, "mouth (right)")
         return (left_mouth + right_mouth) / 2
 
     def get_ankle_midpoint(self, landmark_array):
-        """右口と左口の中点を計算"""
         left_ankle = self.get_point(landmark_array, "left ankle")
         right_ankle = self.get_point(landmark_array, "right ankle")
         return (left_ankle + right_ankle) / 2
 
     def get_high(self, landmark_array, start, end):
-        """startからendのベクトルを計算"""
         start_y = self.get_point(landmark_array, start)[1]
         end_y = self.get_point(landmark_array, end)[1]
         return start_y - end_y
 
     def draw_roi(self, frame):
-        """ROI領域を描画する関数"""
         if self.roi_points is not None and len(self.roi_points) > 0:
-            # ROIの4つの頂点を使用して描画
             frame = draw_roi_on_image(frame, self.roi_points)
         return frame
 
     def draw_clear_roi(self, frame):
-        """CLEAR_ROI領域を描画する関数"""
         if self.clear_roi_points is not None and len(self.clear_roi_points) > 0:
-            # ROIの4つの頂点を使用して描画
             frame = draw_clear_roi_on_image(frame, self.clear_roi_points)
         return frame
 
     def get_vector(self, landmark_array, start, end):
-        """startからendのベクトルを計算"""
         start_point = self.get_point(landmark_array, start)
         end_point = self.get_point(landmark_array, end)
         return end_point - start_point
 
     def cross_vector(self, start, end):
-        """外積を計算"""
         return np.cross(start * 10, end * 10)
 
     @staticmethod
     def get_angle_vector(vec):
-        """vecの水平成分を計算(正規化含む)"""
-        # ROIで定義された方向ベクトルの取得
-        roi_vec = np.array([0.39939338, -0.00622076,  0.02112389])
+        roi_vec = np.array([0.39939338, -0.00622076, 0.02112389])
         vec_scale = np.linalg.norm(vec)
         roi_vec_scale = np.linalg.norm(roi_vec)
 
@@ -323,7 +389,6 @@ class EventDetector:
         return theta
 
     def draw_vector(self, frame, landmark_array, start, vec, *args, **kwargs):
-        """ベクトルの描画"""
         start_point = self.get_point(landmark_array, start)
         return draw_arrow_on_image(
             frame, start_point[:2], (start_point[:2] + vec[:2]), *args, **kwargs

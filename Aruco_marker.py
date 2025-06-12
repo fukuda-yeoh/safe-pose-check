@@ -28,8 +28,8 @@ cap = cv2.VideoCapture(1)
 # cap = cv2.VideoCapture(video_path)
 
 # 表示サイズを設定
-display_width = 1152
-display_height = 648
+display_width = 2160
+display_height = 3840
 
 while True:
     # フレームをキャプチャ

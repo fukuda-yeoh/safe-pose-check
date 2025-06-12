@@ -10,6 +10,7 @@ PoseLandmarker = mp.tasks.vision.PoseLandmarker
 PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
 
+
 class RecognitionThread(Thread):
     def __init__(self, model_path, in_queue=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
