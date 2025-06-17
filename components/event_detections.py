@@ -6,7 +6,7 @@ import numpy as np
 
 from funcs.calc_score import calculate_score_l, calculate_score_r
 from funcs.landmark_funcs import (
-    get_pos_array,
+    # get_pos_array, # この行を削除
     draw_arrow_on_image,
     draw_roi_on_image,
     draw_clear_roi_on_image,
@@ -23,15 +23,15 @@ class EventState(Enum):
 
 class EventDetector:
     def __init__(
-            self,
-            landmark_labels,
-            roi_points,
-            clear_roi_points,
+        self,
+        landmark_labels,
+        roi_points,
+        clear_roi_points,
     ):
         self.labels = landmark_labels
         self.roi_points = np.array(roi_points, dtype=np.float32)  # メインROIの頂点座標
         self.clear_roi_points = np.array(clear_roi_points, dtype=np.float32)
-        self.crop_size = (200, 200)
+        self.crop_size = (200, 200)  # この値は使われなくなりますが、残しておきます
         self.direction_vec = np.array([1, 0, 0])
 
         self.virtual_points = {
@@ -41,7 +41,8 @@ class EventDetector:
             "mid ankle": self.get_ankle_midpoint,
         }
 
-        self.events = self.default_event()
+        self.events = self._create_event_structure()
+
         self.state = EventState.NO_PERSON
         self.in_queue = Queue()
         self.out_queue = Queue()
@@ -54,43 +55,38 @@ class EventDetector:
             "PR_score": 0,
         }
 
-    def reset(self):
-        self.events = self.default_event()
-        self.scores = {key: 0 for key in self.scores}
+        # ROIの中心X座標は単一人物認識では不要になるため削除
+        # self.roi_center_x = (self.roi_points[:, 0].min() + self.roi_points[:, 0].max()) / 2.0
 
     @staticmethod
-    def default_event():
+    def _create_event_structure():
         return {
             "Look Left": {
                 "param": "head",
                 "landmark": "nose",
                 "conditional": "25 > param > 0",
-                "previous": 0,
-                "crop": None,
+                # "previous": 0, # previousは不要
                 "detected": False,
             },
             "Look Right": {
                 "param": "head",
                 "landmark": "nose",
                 "conditional": "param > 155",
-                "previous": 0,
-                "crop": None,
+                # "previous": 0,
                 "detected": False,
             },
             "Point Left": {
                 "param": "arm_high",
                 "landmark": "right wrist",
                 "conditional": "param > 0.6 and 25 > params['forearm'] > 0",
-                "previous": 0,
-                "crop": None,
+                # "previous": 0,
                 "detected": False,
             },
             "Point Right": {
                 "param": "arm_high",
                 "landmark": "right wrist",
                 "conditional": "param > 0.6 and params['forearm'] > 155",
-                "previous": 0,
-                "crop": None,
+                # "previous": 0,
                 "detected": False,
             },
         }
@@ -119,39 +115,72 @@ class EventDetector:
 
     def run_in_thread(self, in_queue):
         while not self.stop_flag:
-            result, timestamp, frame = in_queue.get()
-            if pose_landmarks_list := result.pose_landmarks:
+            result, timestamp, frame = in_queue.get()  # frameはRecognitionThreadで描画済みのもの
+
+            # 各フレームの開始時にself.eventsのdetectedフラグをリセット
+            # これにより、EventDetectorは常にそのフレームでの検出状況のみを報告する
+            for name in self.events:
+                self.events[name]["detected"] = False
+
+            landmark_array = None
+            params = None
+            events_for_output = {name: False for name in self.events}  # 検出されなければ全てFalse
+
+            if pose_landmarks_list := result.pose_landmarks:  # 単一人物なので [0] を使う
+                # landmark_array をここで作成
+                # num_poses=1なので、pose_landmarks_list は必ず1つのPoseLandmarksオブジェクトを含むリスト
                 landmark_array = landmarks_to_array(pose_landmarks_list)
-                params, annotated_image, events = self.run(landmark_array, frame)
+
+                # run メソッドは単一人物の処理を行う
+                params, frame = self.run(landmark_array, frame)
 
                 self.update_scores(params)  # スコアを更新
 
-                annotated_image = draw_landmarks_on_image(
-                    annotated_image, pose_landmarks_list
-                )
-                annotated_image = self.draw_roi(
-                    annotated_image,
-                )
-                frame = annotated_image
-                events = self.events
-            else:
-                frame = self.draw_roi(
-                    frame,
-                )
-                landmark_array = None
-                params = None
-                events = {}
+                # event_detections.pyではROIとClear ROI、ベクトルの描画のみを行う
+                # 骨格の描画はrecognition_thread.pyで行われるため、ここから削除
+                frame = self.draw_roi(frame)
+                frame = self.draw_clear_roi(frame)
 
-            self.out_queue.put((timestamp, frame, landmark_array, params, events))
+                # ベクトル描画
+                head_vec = self.cross_vector(
+                    self.get_vector(landmark_array, "left eye", "right eye"),
+                    self.get_vector(landmark_array, "mid eye", "mid mouth"),
+                )
+                forearm_vec = self.get_vector(
+                    landmark_array, "right elbow", "right wrist"
+                )
+
+                frame = self.draw_vector(frame, landmark_array, "nose", head_vec)
+                frame = self.draw_vector(
+                    frame, landmark_array, "right elbow", forearm_vec
+                )
+
+                events_for_output = {k: v["detected"] for k, v in self.events.items()}
+            else:
+                # ランドマークが検出されない場合、ROIとClear ROIだけ描画
+                frame = self.draw_roi(frame)
+                frame = self.draw_clear_roi(frame)
+                self.state = EventState.NO_PERSON  # 人物がいなくなったことを通知
+
+            self.out_queue.put(
+                (timestamp, frame, landmark_array, params, events_for_output)
+            )
 
     def run(self, landmark_array, frame=None):
         # メインROI内か判定
         in_roi = self.feet_inside_roi(landmark_array)
         in_clear_roi = self.feet_inside_clear_roi(landmark_array)
+
+        # 状態遷移のロジック
         if in_roi:
             self.state = EventState.ENTERED_ROI
-        elif in_clear_roi:
+        elif (
+            in_clear_roi and self.state == EventState.ENTERED_ROI
+        ):  # ROIに入った後にクリアROIに入った場合のみEXITED
             self.state = EventState.EXITED_ROI
+        elif not in_roi and not in_clear_roi:  # どちらのROIにもいない場合
+            self.state = EventState.NO_PERSON
+        # それ以外の場合は現在の状態を維持（例：NO_PERSONの状態でクリアROIにいる場合など）
 
         eye_vec = self.get_vector(landmark_array, "left eye", "right eye")
         down_vec = self.get_vector(landmark_array, "mid eye", "mid mouth")
@@ -174,54 +203,17 @@ class EventDetector:
             "arm_high": arm_high,
         }
 
-        if in_roi:
-            self.check_events(params, landmark_array, frame)
+        if in_roi:  # ROI内にいる場合のみイベント検出
+            self.check_events(params)
 
-        if frame is not None:
-            frame = self.draw_roi(frame)
-            frame = self.draw_clear_roi(frame)
-            frame = self.draw_vector(frame, landmark_array, "nose", head_vec)
-            frame = self.draw_vector(frame, landmark_array, "right elbow", forearm_vec)
+        # runメソッドはparamsとframeのみを返すように変更
+        return params, frame
 
-        return params, frame, self.events
-
-    def check_events(self, params, landmark_array, frame=None):
-        for name, event in self.events.items():
-            param = params[event["param"]]
-            if eval(event["conditional"]):
-                event["detected"] = True
-                if abs(param) > event["previous"]:
-                    event["previous"] = param
-                    if frame is not None:
-                        height, width, _ = frame.shape
-                        center = self.get_point(landmark_array, event["landmark"])
-                        center[0] *= width
-                        center[1] *= height
-                        event["crop"] = self.crop_event(frame, center)
-
-    def crop_event(self, frame, center):
-        x_start = int(center[0] - self.crop_size[0] / 2)
-        x_end = int(center[0] + self.crop_size[0] / 2)
-        y_start = int(center[1] - self.crop_size[1] / 2)
-        y_end = int(center[1] + self.crop_size[1] / 2)
-        if x_start < 0:
-            x_end += abs(x_start)
-            x_start = 0
-        if y_start < 0:
-            y_end += abs(y_start)
-            y_start = 0
-        if x_end > 640:
-            x_start -= (x_end - 320)
-            x_end = 320
-        if y_end > 480:
-            y_start -= (y_end - 240)
-            y_end = 240
-        cropped_frame = frame[
-               int(y_start): int(y_end),
-               int(x_start): int(x_end),
-               :,
-               ]
-        return cropped_frame
+    def check_events(self, params):
+        for name, event_def in self.events.items():
+            param = params[event_def["param"]]
+            if eval(event_def["conditional"]):
+                event_def["detected"] = True
 
     def feet_inside_roi(self, landmark_array):
         """両足が指定領域内にあるかを判定"""
@@ -230,8 +222,6 @@ class EventDetector:
         return self.point_inside_roi(left_ankle) and self.point_inside_roi(right_ankle)
 
     def point_inside_roi(self, point):
-        # `cv2.pointPolygonTest`により、pointが多角形内にあるかどうかを判定
-        # 戻り値が1.0の場合は内側、-1.0の場合は外側
         return cv.pointPolygonTest(self.roi_points, (point[0], point[1]), False) >= 0
 
     def feet_inside_clear_roi(self, landmark_array):
@@ -245,15 +235,18 @@ class EventDetector:
     def point_inside_clear_roi(self, point):
         """`cv2.pointPolygonTest`により、pointがクリア領域内にあるかを判定"""
         return (
-                cv.pointPolygonTest(self.clear_roi_points, (point[0], point[1]), False) >= 0
+            cv.pointPolygonTest(self.clear_roi_points, (point[0], point[1]), False) >= 0
         )
 
     def get_point(self, landmark_array, name):
         """指定した特徴点の骨格情報を取得"""
         if name in self.labels:
-            return get_pos_array(landmark_array, self.labels, name)[:3].copy()
+            # landmark_array は [x, y, z, visibility, presence] の形式を想定
+            label_index = list(self.labels.keys()).index(name)
+            return landmark_array[label_index][:3].copy()  # x,y,z のみ返す
         elif name in self.virtual_points:
             return self.virtual_points[name](landmark_array)
+        return np.array([0, 0, 0])  # ランドマークが見つからない場合のデフォルト値
 
     def get_shoulder_midpoint(self, landmark_array):
         """右肩と左肩の中点を計算"""
@@ -288,14 +281,12 @@ class EventDetector:
     def draw_roi(self, frame):
         """ROI領域を描画する関数"""
         if self.roi_points is not None and len(self.roi_points) > 0:
-            # ROIの4つの頂点を使用して描画
             frame = draw_roi_on_image(frame, self.roi_points)
         return frame
 
     def draw_clear_roi(self, frame):
         """CLEAR_ROI領域を描画する関数"""
         if self.clear_roi_points is not None and len(self.clear_roi_points) > 0:
-            # ROIの4つの頂点を使用して描画
             frame = draw_clear_roi_on_image(frame, self.clear_roi_points)
         return frame
 
@@ -312,13 +303,17 @@ class EventDetector:
     @staticmethod
     def get_angle_vector(vec):
         """vecの水平成分を計算(正規化含む)"""
-        # ROIで定義された方向ベクトルの取得
-        roi_vec = np.array([0.39939338, -0.00622076,  0.02112389])
+        roi_vec = np.array([0.39939338, -0.00622076, 0.02112389])
         vec_scale = np.linalg.norm(vec)
         roi_vec_scale = np.linalg.norm(roi_vec)
 
+        if vec_scale == 0 or roi_vec_scale == 0:  # ゼロ除算を避ける
+            return 0
+
         dot_product = np.dot(vec, roi_vec)
         cos_theta = dot_product / (vec_scale * roi_vec_scale)
+        # acos の引数が [-1, 1] の範囲に収まるようにクリッピング
+        cos_theta = np.clip(cos_theta, -1.0, 1.0)
         theta = np.arccos(cos_theta) * 180 / np.pi
         return theta
 

@@ -10,6 +10,7 @@ PoseLandmarker = mp.tasks.vision.PoseLandmarker
 PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
 
+
 class RecognitionThread(Thread):
     def __init__(self, model_path, in_queue=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -17,7 +18,7 @@ class RecognitionThread(Thread):
         self.model_path = model_path
         options = PoseLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=str(model_path)),
-            num_poses=1,
+            num_poses=1,  # 単一人物検出に限定
             running_mode=VisionRunningMode.VIDEO,
             output_segmentation_masks=False,
         )
@@ -37,13 +38,20 @@ class RecognitionThread(Thread):
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
 
             result = self.detector.detect_for_video(mp_image, timestamp)
-            if pose_landmarks_list := result.pose_landmarks:
+
+            # 検出結果がある場合はランドマークを描画、ない場合は元のフレームをそのまま使う
+            if (
+                result.pose_landmarks
+            ):  # result.pose_landmarks はリストのリストだが、num_poses=1なので通常は1つの人物のみ
+                # draw_landmarks_on_image が result オブジェクトも受け付けるように funcs/landmark_funcs.py を修正済み
                 annotated_image = draw_landmarks_on_image(
-                    mp_image.numpy_view(), pose_landmarks_list
+                    mp_image.numpy_view(), result  # resultオブジェクトを直接渡す
                 )
                 display_frame = annotated_image
             else:
-                display_frame = frame
+                display_frame = frame  # ランドマークが検出されない場合は元のフレーム
+
+            # EventDetector には検出結果と、描画済みのフレームを渡す
             self.out_queue.put((result, timestamp, display_frame))
 
     def stop(self):

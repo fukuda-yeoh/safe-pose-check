@@ -4,19 +4,21 @@ import numpy as np
 
 class DisplayFrame:
     def __init__(self):
-        # ベースフレームの生成は不要になります
-        # self.base_frame = self._generate_base_frame()
         self.dynamic_frames = {
-            "Camera": [None, (0, 0, 0, 0)],  # カメラ映像のサイズと位置は動的に設定するため、初期値は0
-            "Image1": [None, (10, 10, 200, 200)],  # カメラ映像の左上に表示する例
-            "Image2": [None, (220, 10, 200, 200)],  # カメラ映像の右上に表示する例
+            "Camera": [None, (0, 0, 0, 0)],
+            "Image1": [None, (10, 10, 200, 200)],
+            "Image2": [None, (220, 10, 200, 200)],
+            "Image3": [None, (10, 220, 200, 200)],
+            "Image4": [None, (220, 220, 200, 200)],
         }
-        self.display_frame = None  # 初期表示フレームはNoneに
+        self.display_frame = None
+        self.status_text = None
+        self.status_text_pos = (0, 0)
 
     def set_dynamic_img(self, key, frame, pos_params=None):
         if key in self.dynamic_frames:
             self.dynamic_frames[key][0] = frame
-            if pos_params:  # 位置とサイズが指定された場合のみ更新
+            if pos_params:
                 self.dynamic_frames[key][1] = pos_params
 
     def clear_dynamic_img(self, key):
@@ -26,33 +28,47 @@ class DisplayFrame:
     def clear_all_dynamic_img(self):
         for key in self.dynamic_frames.keys():
             self.dynamic_frames[key][0] = None
+        self.clear_status_text()
+
+    def set_status_text(self, text, pos):
+        self.status_text = text
+        self.status_text_pos = pos
+
+    def clear_status_text(self):
+        self.status_text = None
+        self.status_text_pos = (0, 0)
 
     def update_display(self):
-        # 'Camera' キーの画像がNoneでないことを確認
         camera_frame_data = self.dynamic_frames.get("Camera")
         if camera_frame_data and camera_frame_data[0] is not None:
             camera_frame = camera_frame_data[0]
-            # カメラ映像をdisplay_frameのベースとして使用
             self.display_frame = camera_frame.copy()
 
-            # カメラ映像以外の動的画像を貼り付け
             for key, (img, params) in self.dynamic_frames.items():
-                if key != "Camera" and img is not None:  # カメラ映像以外を貼り付け
+                if key != "Camera" and img is not None:
                     self._paste(self.display_frame, img, *params)
+
+            # OK/NGテキストを描画
+            if self.status_text is not None:
+                color = (0, 255, 0) if self.status_text == "OK" else (0, 0, 255)
+                DisplayFrame._draw_text_with_background(
+                    self.display_frame,
+                    self.status_text,
+                    self.status_text_pos,
+                    font_scale=1.5,
+                    thickness=3,
+                    color=color,
+                    bg_color=(0, 0, 0),
+                    center_x_aligned=True,
+                )
+
         else:
-            # カメラ映像がない場合は、黒い画面を表示するか、何もしないか選択
-            # 今回は、カメラ映像がない場合はNoneのままにする
             self.display_frame = None
 
         return self.display_frame
 
-    # _generate_base_frame メソッドは不要になります
-    # def _generate_base_frame(self):
-    #     frame = np.zeros((3840, 2160, 3), dtype=np.uint8)
-    #     return frame
-
     @staticmethod
-    def _draw_heading_text(
+    def _draw_text_with_background(
         frame,
         text,
         pos,
@@ -60,11 +76,29 @@ class DisplayFrame:
         font_scale=0.6,
         color=(255, 255, 255),
         thickness=2,
+        bg_color=(0, 0, 0),
+        center_x_aligned=False,
     ):
+        (text_width, text_height), baseline = cv.getTextSize(
+            text, font, font_scale, thickness
+        )
+        x, y = pos
+
+        if center_x_aligned:
+            x = max(0, x - text_width // 2)
+
+        cv.rectangle(
+            frame,
+            (x, y - text_height - baseline),
+            (x + text_width, y + baseline),
+            bg_color,
+            -1,
+        )
+
         cv.putText(
             frame,
             text,
-            pos,
+            (x, y),
             font,
             font_scale,
             color,
@@ -73,54 +107,35 @@ class DisplayFrame:
 
     @staticmethod
     def _paste(dst, src, x, y, a, b):
-        # 指定されたサイズにリサイズ
         resized_img = cv.resize(src, (a, b))
 
-        # 貼り付け先の範囲をチェックし、はみ出す部分を調整
-        if x >= dst.shape[1] or y >= dst.shape[0]:
-            return
+        h_dst, w_dst, _ = dst.shape
+        h_src, w_src, _ = resized_img.shape
 
-        w = (
-            min(dst.shape[1] - x, resized_img.shape[1])
-            if x >= 0
-            else min(max(resized_img.shape[1] + x, 0), dst.shape[1])
-        )
-        h = (
-            min(dst.shape[0] - y, resized_img.shape[0])
-            if y >= 0
-            else min(max(resized_img.shape[0] + y, 0), dst.shape[0])
-        )
-        u = 0 if x >= 0 else min(-x, resized_img.shape[1] - 1)
-        v = 0 if y >= 0 else min(-y, resized_img.shape[0] - 1)
-        px = max(x, 0)
-        py = max(y, 0)
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(w_dst, x + w_src)
+        y2 = min(h_dst, y + h_src)
 
-        # 貼り付け
-        # resized_img のサイズと貼り付け先のROIのサイズが一致しない可能性があるため、
-        # roi_resized の幅と高さを調整して貼り付けます。
-        roi_dst = dst[py : py + h, px : px + w]
-        roi_resized = resized_img[v : v + h, u : u + w]
+        u1 = 0
+        v1 = 0
+        if x < 0:
+            u1 = -x
+        if y < 0:
+            v1 = -y
+        u2 = u1 + (x2 - x1)
+        v2 = v1 + (y2 - y1)
 
-        # サイズが異なる場合は、貼り付け先のROIのサイズに合わせて resized_img を再度リサイズ
-        if (
-            roi_dst.shape[0] != roi_resized.shape[0]
-            or roi_dst.shape[1] != roi_resized.shape[1]
-        ):
-            roi_resized = cv.resize(roi_resized, (roi_dst.shape[1], roi_dst.shape[0]))
-
-        roi_dst[:] = roi_resized
+        if x1 < x2 and y1 < y2:
+            dst[y1:y2, x1:x2] = resized_img[v1:v2, u1:u2]
 
 
 if __name__ == "__main__":
     display = DisplayFrame()
-    # テスト用に大きな白い画像と青い画像を準備
-    white_img = np.ones((480, 640, 3), dtype=np.uint8) * 255  # カメラ映像の代わり
-    blue_img = np.zeros((100, 100, 3), dtype=np.uint8)
-    blue_img[:, :, 0] = 255
+    white_img = np.ones((480, 640, 3), dtype=np.uint8) * 255
 
-    display.set_dynamic_img("Camera", white_img, (0, 0, 640, 480))  # カメラ映像のサイズと位置を設定
-    display.set_dynamic_img("Image1", blue_img)
-    display.set_dynamic_img("Image2", blue_img)
+    display.set_dynamic_img("Camera", white_img, (0, 0, 640, 480))
+    display.set_status_text("NG", (320, 100))
 
     display.update_display()
     if display.display_frame is not None:
