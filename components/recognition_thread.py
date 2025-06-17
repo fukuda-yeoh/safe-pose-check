@@ -10,6 +10,7 @@ PoseLandmarker = mp.tasks.vision.PoseLandmarker
 PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
 
+
 class RecognitionThread(Thread):
     def __init__(self, model_path, in_queue=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -37,9 +38,13 @@ class RecognitionThread(Thread):
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
 
             result = self.detector.detect_for_video(mp_image, timestamp)
-            if pose_landmarks_list := result.pose_landmarks:
+            # 変更点: result.pose_landmarks が空でなく、かつ、最初の人物のランドマークリストが存在する場合にのみ描画
+            if result.pose_landmarks and len(result.pose_landmarks) > 0:  # 修正
+                # 最初の人物のランドマークリストを取得
+                person_pose_landmarks = result.pose_landmarks[0]  #
                 annotated_image = draw_landmarks_on_image(
-                    mp_image.numpy_view(), pose_landmarks_list
+                    mp_image.numpy_view(),
+                    person_pose_landmarks,  # ここも変更: person_pose_landmarks を渡す
                 )
                 display_frame = annotated_image
             else:

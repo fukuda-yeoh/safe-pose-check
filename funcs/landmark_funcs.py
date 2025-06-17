@@ -26,8 +26,15 @@ def get_pos_array(landmark_array, labels, landmark_name):
     return landmark_array[i, :]
 
 
-def landmarks_to_array(landmarks, body=0):
-    landmark_list = landmarks[body]
+# landmarks_to_array 関数の修正
+def landmarks_to_array(landmark_list):  # 引数名をより分かりやすく変更 (body引数を削除)
+    """
+    NormalizedLandmarkオブジェクトのリストをNumPy配列に変換します。
+    """
+    # landmark_list が空の場合のハンドリングを追加
+    if not landmark_list:
+        return np.zeros(shape=(0, 5), dtype=float)
+
     np_arr = np.zeros(shape=(len(landmark_list), 5), dtype=float)
     for i, _landmark in enumerate(landmark_list):
         np_arr[i, 0] = _landmark.x
@@ -42,25 +49,31 @@ def draw_landmarks_on_image(rgb_image, pose_landmarks_list):
     annotated_image = np.copy(rgb_image)
 
     # Loop through the detected poses to visualize.
-    for idx in range(len(pose_landmarks_list)):
-        pose_landmarks = pose_landmarks_list[idx]
+    # pose_landmarks_list は既に単一人物のランドマークリストであることを想定
+    # draw_landmarks_on_image(annotated_image, person_pose_landmarks) の呼び出しを想定
+    # そのため、idx を使うループは不要になるが、互換性のために残すか、調整する
+    # しかし、現在の呼び出し元 (event_detections.py) が `person_pose_landmarks` を直接渡すので、
+    # ここでの `for idx in range(len(pose_landmarks_list)):` は、`len(person_pose_landmarks)` になってしまい、
+    # その中の `pose_landmarks = pose_landmarks_list[idx]` で `NormalizedLandmark` が取り出されるため、
+    # `pose_landmarks_proto` の部分でエラーになる。
 
-        # Draw the pose landmarks.
-        pose_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
-        pose_landmarks_proto.landmark.extend(
-            [
-                landmark_pb2.NormalizedLandmark(
-                    x=landmark.x, y=landmark.y, z=landmark.z
-                )
-                for landmark in pose_landmarks
-            ]
-        )
-        solutions.drawing_utils.draw_landmarks(
-            annotated_image,
-            pose_landmarks_proto,
-            solutions.pose.POSE_CONNECTIONS,
-            solutions.drawing_styles.get_default_pose_landmarks_style(),
-        )
+    # 修正: pose_landmarks_list が単一のランドマークリストであると仮定して処理
+    pose_landmarks = pose_landmarks_list  # ここがポイント
+
+    # Draw the pose landmarks.
+    pose_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
+    pose_landmarks_proto.landmark.extend(
+        [
+            landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z)
+            for landmark in pose_landmarks  # ここも変更
+        ]
+    )
+    solutions.drawing_utils.draw_landmarks(
+        annotated_image,
+        pose_landmarks_proto,
+        solutions.pose.POSE_CONNECTIONS,
+        solutions.drawing_styles.get_default_pose_landmarks_style(),
+    )
     return annotated_image
 
 

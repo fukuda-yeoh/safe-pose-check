@@ -41,7 +41,7 @@ dist_coeffs = np.array(
 )
 
 # カメラを開く
-model_path = project_root() / "models" / "pose_landmarker_full.task"
+model_path = project_root() / "models" / "pose_landmarker_lite.task"
 landmarks_def_path = project_root() / "models" / "landmarks.txt"
 save_dir = project_root() / "record"
 save_dir.mkdir(exist_ok=True)
@@ -78,6 +78,8 @@ while True:
         landmark_array,
         params,
         events,
+        person_bbox_coords,  # 追加
+        dim_mask_needed,  # 追加
     ) = event_detector.out_queue.get()
 
     if final_frame is not None:
@@ -88,18 +90,26 @@ while True:
     else:
         display_frame.clear_dynamic_img("Camera")
 
-    # ここに信号機の状態更新ロジックを追加
-    # EventDetectorから受け取ったeventsに基づいて信号機の状態を更新
+    # 信号機の状態更新ロジック
     for name, event_data in events.items():
-        # EventDetectorで検出されたら信号機を青に
         display_frame.set_traffic_light_state(name, event_data["detected"])
+
+    # ここに人物の枠と薄暗い効果の設定ロジックを追加
+    # EventState.ENTERED_ROI の場合にのみ、人物を強調表示
+    if event_detector.state == EventState.ENTERED_ROI:
+        display_frame.set_person_detection_info(person_bbox_coords, dim_mask_needed)
+    else:
+        # ROI外に出たり人物がいない場合は、枠とマスクをクリア
+        display_frame.set_person_detection_info(None, False)
 
     display_frame.update_display()
 
     if event_detector.state == EventState.EXITED_ROI:
         event_detector.reset()
-        display_frame.clear_all_dynamic_img()  # 全ての動的画像をクリア（信号機もリセットされる）
-        display_frame.reset_traffic_lights()  # 明示的に信号機もリセットする（念のため）
+        display_frame.clear_all_dynamic_img()
+        display_frame.reset_traffic_lights()
+        # ROI外に出たときに人物強調表示もクリア
+        display_frame.set_person_detection_info(None, False)
 
     if is_recording:
         recorder.record_data(

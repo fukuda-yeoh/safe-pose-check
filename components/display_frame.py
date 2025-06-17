@@ -11,18 +11,19 @@ class DisplayFrame:
         }
         self.display_frame = None
 
-        # 信号機の状態を保持する辞書を追加
-        # キーはイベント名に対応し、値はTrue(青)またはFalse(赤)
         self.traffic_light_states = {
             "Look Left": False,
             "Look Right": False,
             "Point Left": False,
             "Point Right": False,
         }
-        # 信号機の描画設定
         self.light_radius = 20
         self.light_margin = 30
-        self.light_spacing = 80  # 信号機間のスペース
+        self.light_spacing = 80
+
+        # 新しいプロパティを追加
+        self.person_bbox = None  # 検出された人物のバウンディングボックス (x1, y1, x2, y2)
+        self.dim_mask_needed = False  # 薄暗いマスクが必要かどうか
 
     def set_dynamic_img(self, key, frame, pos_params=None):
         if key in self.dynamic_frames:
@@ -37,21 +38,27 @@ class DisplayFrame:
     def clear_all_dynamic_img(self):
         for key in self.dynamic_frames.keys():
             self.dynamic_frames[key][0] = None
-        # 全ての動的画像をクリアする際に信号機の状態もリセット
         self.reset_traffic_lights()
+        # 全ての動的画像をクリアする際に人物の枠とマスク情報もクリア
+        self.person_bbox = None
+        self.dim_mask_needed = False
 
     def set_traffic_light_state(self, event_name, is_detected):
-        """
-        指定されたイベント名の信号機の状態を更新します。
-        is_detectedがTrueなら青、Falseなら赤になります。
-        """
         if event_name in self.traffic_light_states:
             self.traffic_light_states[event_name] = is_detected
 
     def reset_traffic_lights(self):
-        """全ての信号機の状態を赤にリセットします。"""
         for key in self.traffic_light_states:
             self.traffic_light_states[key] = False
+
+    def set_person_detection_info(self, bbox, dim_mask):
+        """
+        人物の検出情報（バウンディングボックスと薄暗いマスクの必要性）を設定します。
+        :param bbox: (x1, y1, x2, y2) 形式のバウンディングボックス座標、またはNone
+        :param dim_mask: 薄暗いマスクが必要な場合にTrue、不要な場合にFalse
+        """
+        self.person_bbox = bbox
+        self.dim_mask_needed = dim_mask
 
     def update_display(self):
         camera_frame_data = self.dynamic_frames.get("Camera")
@@ -59,20 +66,23 @@ class DisplayFrame:
             camera_frame = camera_frame_data[0]
             self.display_frame = camera_frame.copy()
 
-            # カメラ映像以外の動的画像を貼り付け（これは変更なし）
+            # ここで薄暗い効果を適用
+            if self.dim_mask_needed and self.person_bbox:
+                self._apply_dim_effect(self.display_frame, self.person_bbox)
+
+            # ここで人物の枠を描画
+            if self.person_bbox:
+                self._draw_person_bbox(self.display_frame, self.person_bbox)
+
             for key, (img, params) in self.dynamic_frames.items():
                 if key != "Camera" and img is not None:
                     self._paste(self.display_frame, img, *params)
 
-            # ここから信号機の描画を追加
             if self.display_frame is not None:
                 frame_h, frame_w, _ = self.display_frame.shape
-                # 信号機を描画するY座標（カメラ映像の下部）
                 light_y = frame_h - self.light_margin - self.light_radius
 
-                # 各信号機を描画
                 light_names = ["Look Left", "Look Right", "Point Left", "Point Right"]
-                # 画面中央に配置するために、全体幅を計算
                 total_lights_width = (
                     len(light_names) * (self.light_radius * 2 + self.light_spacing)
                 ) - self.light_spacing
@@ -83,7 +93,7 @@ class DisplayFrame:
                         (0, 0, 255)
                         if not self.traffic_light_states[name]
                         else (0, 255, 0)
-                    )  # 赤(False)または緑(True)
+                    )
                     light_x = start_x + i * (self.light_radius * 2 + self.light_spacing)
                     self._draw_traffic_light(
                         self.display_frame,
@@ -91,7 +101,6 @@ class DisplayFrame:
                         self.light_radius,
                         light_color,
                     )
-                    # 信号機の下にテキストを描画
                     text_x = light_x - (
                         cv.getTextSize(name, cv.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0][0] // 2
                     )
@@ -113,9 +122,54 @@ class DisplayFrame:
 
     @staticmethod
     def _draw_traffic_light(frame, center_coords, radius, color):
-        """信号機として円を描画します。"""
-        cv.circle(frame, center_coords, radius, color, -1)  # -1 で塗りつぶし
-        cv.circle(frame, center_coords, radius, (255, 255, 255), 2)  # 白い境界線
+        cv.circle(frame, center_coords, radius, color, -1)
+        cv.circle(frame, center_coords, radius, (255, 255, 255), 2)
+
+    @staticmethod
+    def _draw_person_bbox(frame, bbox, color=(0, 255, 255), thickness=3):
+        """
+        人物のバウンディングボックスを描画します。
+        :param frame: 描画対象のフレーム
+        :param bbox: (x1, y1, x2, y2) 形式のバウンディングボックス座標
+        :param color: 枠の色 (BGR)
+        :param thickness: 枠の太さ
+        """
+        x1, y1, x2, y2 = bbox
+        cv.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+
+    @staticmethod
+    def _apply_dim_effect(frame, bbox, dim_factor=0.6):
+        """
+        バウンディングボックスの周囲を薄暗くする効果を適用します。
+        :param frame: 処理対象のフレーム
+        :param bbox: (x1, y1, x2, y2) 形式のバウンディングボックス座標
+        :param dim_factor: 薄暗くする度合い (0.0:完全に透明, 1.0:完全に黒)
+        """
+        overlay = frame.copy()
+        output = frame.copy()
+
+        # マスクの作成 (人物の枠内は透明、それ以外は黒)
+        mask = np.zeros(frame.shape, dtype=np.uint8)
+        x1, y1, x2, y2 = bbox
+
+        # 枠内は白 (255, 255, 255) に設定
+        cv.rectangle(mask, (x1, y1), (x2, y2), (255, 255, 255), -1)
+
+        # マスクの反転（枠外が白、枠内が黒）
+        mask_inv = cv.bitwise_not(mask)
+
+        # 薄暗くする部分のオーバーレイを作成
+        # 薄暗くするエリアだけを抽出し、指定のdim_factorで暗くする
+        dim_area = cv.bitwise_and(overlay, mask_inv)
+        dim_area = cv.convertScaleAbs(dim_area * dim_factor)
+
+        # 枠内は元の画像をそのまま使用
+        person_area = cv.bitwise_and(overlay, mask)
+
+        # 結合して最終的な画像を作成
+        cv.add(dim_area, person_area, output)
+
+        frame[:] = output[:]
 
     @staticmethod
     def _draw_heading_text(
@@ -178,12 +232,13 @@ if __name__ == "__main__":
     blue_img[:, :, 0] = 255
 
     display.set_dynamic_img("Camera", white_img, (0, 0, 640, 480))
-    # テストのためにImage1とImage2のセットを削除
-    # display.set_dynamic_img("Image1", blue_img)
-    # display.set_dynamic_img("Image2", blue_img)
 
-    display.set_traffic_light_state("Look Left", True)  # 例としてLook Leftを青に
-    display.set_traffic_light_state("Point Right", True)  # 例としてPoint Rightを青に
+    display.set_traffic_light_state("Look Left", True)
+    display.set_traffic_light_state("Point Right", True)
+
+    # テスト用バウンディングボックスと薄暗い効果
+    test_bbox = (100, 100, 500, 400)  # 例のバウンディングボックス
+    display.set_person_detection_info(test_bbox, True)  # 薄暗いマスクを適用
 
     display.update_display()
     if display.display_frame is not None:
