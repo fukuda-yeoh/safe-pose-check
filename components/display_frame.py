@@ -4,19 +4,30 @@ import numpy as np
 
 class DisplayFrame:
     def __init__(self):
-        # ベースフレームの生成は不要になります
-        # self.base_frame = self._generate_base_frame()
         self.dynamic_frames = {
-            "Camera": [None, (0, 0, 0, 0)],  # カメラ映像のサイズと位置は動的に設定するため、初期値は0
-            "Image1": [None, (10, 10, 200, 200)],  # カメラ映像の左上に表示する例
-            "Image2": [None, (220, 10, 200, 200)],  # カメラ映像の右上に表示する例
+            "Camera": [None, (0, 0, 0, 0)],
+            "Image1": [None, (10, 10, 200, 200)],
+            "Image2": [None, (220, 10, 200, 200)],
         }
-        self.display_frame = None  # 初期表示フレームはNoneに
+        self.display_frame = None
+
+        # 信号機の状態を保持する辞書を追加
+        # キーはイベント名に対応し、値はTrue(青)またはFalse(赤)
+        self.traffic_light_states = {
+            "Look Left": False,
+            "Look Right": False,
+            "Point Left": False,
+            "Point Right": False,
+        }
+        # 信号機の描画設定
+        self.light_radius = 20
+        self.light_margin = 30
+        self.light_spacing = 80  # 信号機間のスペース
 
     def set_dynamic_img(self, key, frame, pos_params=None):
         if key in self.dynamic_frames:
             self.dynamic_frames[key][0] = frame
-            if pos_params:  # 位置とサイズが指定された場合のみ更新
+            if pos_params:
                 self.dynamic_frames[key][1] = pos_params
 
     def clear_dynamic_img(self, key):
@@ -26,30 +37,85 @@ class DisplayFrame:
     def clear_all_dynamic_img(self):
         for key in self.dynamic_frames.keys():
             self.dynamic_frames[key][0] = None
+        # 全ての動的画像をクリアする際に信号機の状態もリセット
+        self.reset_traffic_lights()
+
+    def set_traffic_light_state(self, event_name, is_detected):
+        """
+        指定されたイベント名の信号機の状態を更新します。
+        is_detectedがTrueなら青、Falseなら赤になります。
+        """
+        if event_name in self.traffic_light_states:
+            self.traffic_light_states[event_name] = is_detected
+
+    def reset_traffic_lights(self):
+        """全ての信号機の状態を赤にリセットします。"""
+        for key in self.traffic_light_states:
+            self.traffic_light_states[key] = False
 
     def update_display(self):
-        # 'Camera' キーの画像がNoneでないことを確認
         camera_frame_data = self.dynamic_frames.get("Camera")
         if camera_frame_data and camera_frame_data[0] is not None:
             camera_frame = camera_frame_data[0]
-            # カメラ映像をdisplay_frameのベースとして使用
             self.display_frame = camera_frame.copy()
 
-            # カメラ映像以外の動的画像を貼り付け
+            # カメラ映像以外の動的画像を貼り付け（これは変更なし）
             for key, (img, params) in self.dynamic_frames.items():
-                if key != "Camera" and img is not None:  # カメラ映像以外を貼り付け
+                if key != "Camera" and img is not None:
                     self._paste(self.display_frame, img, *params)
+
+            # ここから信号機の描画を追加
+            if self.display_frame is not None:
+                frame_h, frame_w, _ = self.display_frame.shape
+                # 信号機を描画するY座標（カメラ映像の下部）
+                light_y = frame_h - self.light_margin - self.light_radius
+
+                # 各信号機を描画
+                light_names = ["Look Left", "Look Right", "Point Left", "Point Right"]
+                # 画面中央に配置するために、全体幅を計算
+                total_lights_width = (
+                    len(light_names) * (self.light_radius * 2 + self.light_spacing)
+                ) - self.light_spacing
+                start_x = (frame_w - total_lights_width) // 2 + self.light_radius
+
+                for i, name in enumerate(light_names):
+                    light_color = (
+                        (0, 0, 255)
+                        if not self.traffic_light_states[name]
+                        else (0, 255, 0)
+                    )  # 赤(False)または緑(True)
+                    light_x = start_x + i * (self.light_radius * 2 + self.light_spacing)
+                    self._draw_traffic_light(
+                        self.display_frame,
+                        (light_x, light_y),
+                        self.light_radius,
+                        light_color,
+                    )
+                    # 信号機の下にテキストを描画
+                    text_x = light_x - (
+                        cv.getTextSize(name, cv.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0][0] // 2
+                    )
+                    cv.putText(
+                        self.display_frame,
+                        name,
+                        (text_x, light_y + self.light_radius + 20),
+                        cv.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (255, 255, 255),
+                        1,
+                        cv.LINE_AA,
+                    )
+
         else:
-            # カメラ映像がない場合は、黒い画面を表示するか、何もしないか選択
-            # 今回は、カメラ映像がない場合はNoneのままにする
             self.display_frame = None
 
         return self.display_frame
 
-    # _generate_base_frame メソッドは不要になります
-    # def _generate_base_frame(self):
-    #     frame = np.zeros((3840, 2160, 3), dtype=np.uint8)
-    #     return frame
+    @staticmethod
+    def _draw_traffic_light(frame, center_coords, radius, color):
+        """信号機として円を描画します。"""
+        cv.circle(frame, center_coords, radius, color, -1)  # -1 で塗りつぶし
+        cv.circle(frame, center_coords, radius, (255, 255, 255), 2)  # 白い境界線
 
     @staticmethod
     def _draw_heading_text(
@@ -73,10 +139,8 @@ class DisplayFrame:
 
     @staticmethod
     def _paste(dst, src, x, y, a, b):
-        # 指定されたサイズにリサイズ
         resized_img = cv.resize(src, (a, b))
 
-        # 貼り付け先の範囲をチェックし、はみ出す部分を調整
         if x >= dst.shape[1] or y >= dst.shape[0]:
             return
 
@@ -95,13 +159,9 @@ class DisplayFrame:
         px = max(x, 0)
         py = max(y, 0)
 
-        # 貼り付け
-        # resized_img のサイズと貼り付け先のROIのサイズが一致しない可能性があるため、
-        # roi_resized の幅と高さを調整して貼り付けます。
         roi_dst = dst[py : py + h, px : px + w]
         roi_resized = resized_img[v : v + h, u : u + w]
 
-        # サイズが異なる場合は、貼り付け先のROIのサイズに合わせて resized_img を再度リサイズ
         if (
             roi_dst.shape[0] != roi_resized.shape[0]
             or roi_dst.shape[1] != roi_resized.shape[1]
@@ -113,14 +173,17 @@ class DisplayFrame:
 
 if __name__ == "__main__":
     display = DisplayFrame()
-    # テスト用に大きな白い画像と青い画像を準備
-    white_img = np.ones((480, 640, 3), dtype=np.uint8) * 255  # カメラ映像の代わり
+    white_img = np.ones((480, 640, 3), dtype=np.uint8) * 255
     blue_img = np.zeros((100, 100, 3), dtype=np.uint8)
     blue_img[:, :, 0] = 255
 
-    display.set_dynamic_img("Camera", white_img, (0, 0, 640, 480))  # カメラ映像のサイズと位置を設定
-    display.set_dynamic_img("Image1", blue_img)
-    display.set_dynamic_img("Image2", blue_img)
+    display.set_dynamic_img("Camera", white_img, (0, 0, 640, 480))
+    # テストのためにImage1とImage2のセットを削除
+    # display.set_dynamic_img("Image1", blue_img)
+    # display.set_dynamic_img("Image2", blue_img)
+
+    display.set_traffic_light_state("Look Left", True)  # 例としてLook Leftを青に
+    display.set_traffic_light_state("Point Right", True)  # 例としてPoint Rightを青に
 
     display.update_display()
     if display.display_frame is not None:
