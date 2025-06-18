@@ -1,3 +1,4 @@
+import time
 from enum import Enum
 from queue import Queue
 
@@ -7,10 +8,9 @@ import numpy as np
 from funcs.calc_score import calculate_score_l, calculate_score_r
 from funcs.landmark_funcs import (
     get_pos_array,
-    draw_arrow_on_image,
+    # draw_arrow_on_image, # 削除
     draw_roi_on_image,
     draw_clear_roi_on_image,
-    draw_landmarks_on_image,
     landmarks_to_array,
 )
 
@@ -61,19 +61,15 @@ class EventDetector:
         self.confirmed_count = 0
         self._previous_state = EventState.NO_PERSON
 
-        # Confirmedカウントを制御するためのフラグ
         self._confirmed_for_current_entry = False
 
     def reset(self):
-        # カウントはリセットしない
-        # self.entered_count = 0
-        # self.confirmed_count = 0
-        self.events = self.default_event()  # イベント検出状態はリセット
+        self.events = self.default_event()
         self.scores = {key: 0 for key in self.scores}
         self.person_bbox = None
         self.dim_mask_needed = False
         self._previous_state = EventState.NO_PERSON
-        self._confirmed_for_current_entry = False  # リセットエリアに出たらこのフラグをリセット
+        self._confirmed_for_current_entry = False
 
     @staticmethod
     def default_event():
@@ -153,35 +149,31 @@ class EventDetector:
                 y2 = int(max_y * h)
                 person_bbox_coords = (x1, y1, x2, y2)
 
-                params, annotated_image, events = self.run(landmark_array, frame)
+                params, frame_with_roi, events = self.run(landmark_array, frame)
 
                 self.update_scores(params)
 
-                annotated_image = draw_landmarks_on_image(
-                    annotated_image, person_pose_landmarks
-                )
-                annotated_image = self.draw_roi(
-                    annotated_image,
-                )
-                frame = annotated_image
-                events = self.events  # runメソッドで更新されたeventsを使用
+                display_frame_for_output = frame_with_roi
+
                 dim_mask_needed = True
             else:
                 frame = self.draw_roi(
                     frame,
                 )
+                frame = self.draw_clear_roi(frame)
                 landmark_array = None
                 params = None
-                events = {}  # 人物がいない場合はイベントもなし
+                events = {}
                 dim_mask_needed = False
                 self.state = EventState.NO_PERSON
                 self._previous_state = EventState.NO_PERSON
-                self._confirmed_for_current_entry = False  # 人物がいなくなったらConfirmedフラグもリセット
+                self._confirmed_for_current_entry = False
+                display_frame_for_output = frame
 
             self.out_queue.put(
                 (
                     timestamp,
-                    frame,
+                    display_frame_for_output,
                     landmark_array,
                     params,
                     events,
@@ -196,26 +188,20 @@ class EventDetector:
         in_roi = self.feet_inside_roi(landmark_array)
         in_clear_roi = self.feet_inside_clear_roi(landmark_array)
 
-        # 新しい状態を決定する前に、現在の状態を保存
         self._previous_state = self.state
 
         if in_roi:
             self.state = EventState.ENTERED_ROI
-            # 以前ENTERED_ROI状態ではなかった場合のみカウント
             if self._previous_state != EventState.ENTERED_ROI:
                 self.entered_count += 1
-                self._confirmed_for_current_entry = False  # 新しい侵入でConfirmedフラグをリセット
+                self._confirmed_for_current_entry = False
         elif in_clear_roi:
             self.state = EventState.EXITED_ROI
-            # リセットエリアに入ったら、Confirmedカウントフラグをリセットする
             self._confirmed_for_current_entry = False
-            # ここでイベント検出状態もリセット（信号機を赤に戻すため）
             self.reset_events_detected_state()
         else:
             self.state = EventState.NO_PERSON
-            # 人物がいなくなったらConfirmedカウントフラグをリセット
             self._confirmed_for_current_entry = False
-            # 人物がいなくなったらイベント検出状態もリセット
             self.reset_events_detected_state()
 
         eye_vec = self.get_vector(landmark_array, "left eye", "right eye")
@@ -239,51 +225,31 @@ class EventDetector:
             "arm_high": arm_high,
         }
 
-        # Confirmedのカウントは、一度の進入につき一度のみ
         if self.state == EventState.ENTERED_ROI:
-            # 既に今回の進入でConfirmedがカウントされていなければチェック
             if not self._confirmed_for_current_entry:
                 self.check_events(params, landmark_array, frame)
-                all_events_detected = all(
+
+                all_events_detected_this_frame = all(
                     event["detected"] for event in self.events.values()
                 )
-                if all_events_detected:
+                if all_events_detected_this_frame:
                     self.confirmed_count += 1
-                    self._confirmed_for_current_entry = True  # カウント済みフラグをTrueに
-                    # 全て検出されたら、イベントの状態をリセット
-                    # ただし、信号機はリセットエリアまで保持するため、ここのreset_events_detected_state()は不要
-                    # 必要に応じて、イベントの`detected`フラグは保持しつつ、`previous`だけリセットするなどの調整が可能
-                    # 今回は、検出されたら信号機は青に保持されるので、イベントの状態自体は保持
-                    pass
-            else:
-                # 既に今回の進入でConfirmedがカウントされている場合、イベント検出は行わない
-                # ただし、信号機は保持されている状態にする
-                pass
-        else:
-            # ROI外またはリセットエリアにいる場合、イベント検出状態をリセット
-            # これは信号機を赤に戻す目的
-            self.reset_events_detected_state()
+                    self._confirmed_for_current_entry = True
 
         if frame is not None:
             frame = self.draw_roi(frame)
             frame = self.draw_clear_roi(frame)
-            if landmark_array is not None:
-                frame = self.draw_vector(frame, landmark_array, "nose", head_vec)
-                frame = self.draw_vector(
-                    frame, landmark_array, "right elbow", forearm_vec
-                )
+            # 腕と顔のベクトルの描画を削除
+            # if landmark_array is not None:
+            #     frame = self.draw_vector(frame, landmark_array, "nose", head_vec)
+            #     frame = self.draw_vector(frame, landmark_array, "right elbow", forearm_vec)
 
         return params, frame, self.events
 
     def reset_events_detected_state(self):
-        """
-        全てのイベントの'detected'フラグをFalseにリセットします。
-        これは主に信号機を赤に戻す目的で使用されます。
-        """
         for name in self.events:
             self.events[name]["detected"] = False
-            # previousもリセットしない (累積のため)
-            # self.events[name]["previous"] = 0
+            self.events[name]["previous"] = 0
             self.events[name]["crop"] = None
 
     def check_events(self, params, landmark_array, frame=None):
@@ -291,10 +257,8 @@ class EventDetector:
             param = params[event["param"]]
             if eval(event["conditional"]):
                 event["detected"] = True
-                # previousは最高値を保持する目的
                 if abs(param) > event["previous"]:
                     event["previous"] = param
-                    # クロップ画像は今回表示しないため、この部分は不要だが残しておく
                     if frame is not None:
                         height, width, _ = frame.shape
                         center = self.get_point(landmark_array, event["landmark"])
@@ -421,11 +385,11 @@ class EventDetector:
         theta = np.arccos(cos_theta) * 180 / np.pi
         return theta
 
-    def draw_vector(self, frame, landmark_array, start, vec, *args, **kwargs):
-        start_point = self.get_point(landmark_array, start)
-        return draw_arrow_on_image(
-            frame, start_point[:2], (start_point[:2] + vec[:2]), *args, **kwargs
-        )
+    # def draw_vector(self, frame, landmark_array, start, vec, *args, **kwargs):
+    # start_point = self.get_point(landmark_array, start)
+    # return draw_arrow_on_image(
+    # frame, start_point[:2], (start_point[:2] + vec[:2]), *args, **kwargs
+    # )
 
     def stop_thread(self):
         self.stop_flag = True

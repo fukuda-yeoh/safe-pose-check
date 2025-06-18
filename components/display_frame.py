@@ -6,10 +6,8 @@ class DisplayFrame:
     def __init__(self):
         self.dynamic_frames = {
             "Camera": [None, (0, 0, 0, 0)],
-            # Image1とImage2は汎用的な枠として残しつつ、
-            # 今回はLeft/Rightcheck画像を専用で管理
-            "LeftCheckImage": [None, (0, 0, 0, 0)],  # 表示位置は動的に設定
-            "RightCheckImage": [None, (0, 0, 0, 0)],  # 表示位置は動的に設定
+            "LeftCheckImage": [None, (0, 0, 0, 0)],
+            "RightCheckImage": [None, (0, 0, 0, 0)],
         }
         self.display_frame = None
 
@@ -29,9 +27,10 @@ class DisplayFrame:
         self.confirmed_count = 0
         self.entered_count = 0
 
-        # 新しい画像プロパティ
         self.left_check_img = None
         self.right_check_img = None
+        # self.error_img = None # 削除
+        # self.error_img_pos = (0, 0, 0, 0) # 削除
 
     def set_dynamic_img(self, key, frame, pos_params=None):
         if key in self.dynamic_frames:
@@ -44,15 +43,14 @@ class DisplayFrame:
             self.dynamic_frames[key][0] = None
 
     def clear_all_dynamic_img(self):
-        # dynamic_framesに登録されているものをすべてクリア
         for key in self.dynamic_frames.keys():
             self.dynamic_frames[key][0] = None
         self.reset_traffic_lights()
         self.person_bbox = None
         self.dim_mask_needed = False
-        # チェック画像もクリア
         self.left_check_img = None
         self.right_check_img = None
+        # self.error_img = None # 削除
 
     def set_traffic_light_state(self, event_name, is_detected):
         if event_name in self.traffic_light_states:
@@ -73,12 +71,6 @@ class DisplayFrame:
     def set_check_image(
         self, direction: str, image_data: np.ndarray = None, pos_params: tuple = None
     ):
-        """
-        指定された方向のチェック画像を設定します。
-        :param direction: 'Left' または 'Right'
-        :param image_data: 表示する画像データ (Noneでクリア)
-        :param pos_params: (x, y, w, h) のタプルで、画像の表示位置とサイズ
-        """
         if direction == "Left":
             self.left_check_img = image_data
             if pos_params:
@@ -87,6 +79,11 @@ class DisplayFrame:
             self.right_check_img = image_data
             if pos_params:
                 self.dynamic_frames["RightCheckImage"][1] = pos_params
+
+    # def set_error_image(self, image_data: np.ndarray = None, pos_params: tuple = None): # 削除
+    #     self.error_img = image_data
+    #     if pos_params:
+    #         self.error_img_pos = pos_params
 
     def update_display(self):
         camera_frame_data = self.dynamic_frames.get("Camera")
@@ -112,8 +109,12 @@ class DisplayFrame:
                 _, params = self.dynamic_frames["RightCheckImage"]
                 self._paste(self.display_frame, self.right_check_img, *params)
 
+            # エラー画像の貼り付け (削除)
+            # if self.error_img is not None:
+            #     self._paste(self.display_frame, self.error_img, *self.error_img_pos)
+
             # カウント表示の描画 (既存のロジック)
-            if self.display_frame is not None:  # カメラフレームがNoneでないことを再確認
+            if self.display_frame is not None:
                 frame_h, frame_w, _ = self.display_frame.shape
 
                 count_text = (
@@ -249,28 +250,35 @@ class DisplayFrame:
 
     @staticmethod
     def _paste(dst, src, x, y, a, b):
-        # srcがNoneの場合は何もしない
         if src is None:
             return
 
+        a = int(max(1, a))
+        b = int(max(1, b))
+
         resized_img = cv.resize(src, (a, b))
 
-        # 貼り付け先の範囲をチェックし、はみ出す部分を調整
         if x >= dst.shape[1] or y >= dst.shape[0]:
             return
 
-        # 貼り付け元の画像が3チャンネルでない場合、3チャンネルに変換 (PNGのアルファチャンネル対応)
-        if resized_img.shape[2] == 4:  # RGBAの場合
-            # アルファチャンネルをマスクとして使用
+        if resized_img.shape[2] == 4:
+            roi_dst = dst[y : y + b, x : x + a]
+            if (
+                roi_dst.shape[0] != resized_img.shape[0]
+                or roi_dst.shape[1] != resized_img.shape[1]
+            ):
+                resized_img = cv.resize(
+                    resized_img, (roi_dst.shape[1], roi_dst.shape[0])
+                )
+
             alpha_s = resized_img[:, :, 3] / 255.0
             alpha_l = 1.0 - alpha_s
             for c in range(0, 3):
-                dst[y : y + b, x : x + a, c] = (
-                    alpha_s * resized_img[:, :, c]
-                    + alpha_l * dst[y : y + b, x : x + a, c]
+                roi_dst[:, :, c] = (
+                    alpha_s * resized_img[:, :, c] + alpha_l * roi_dst[:, :, c]
                 )
-            return  # 貼り付け処理が完了したので終了
-        elif resized_img.shape[2] == 1:  # グレースケールの場合
+            return
+        elif resized_img.shape[2] == 1:
             resized_img = cv.cvtColor(resized_img, cv.COLOR_GRAY2BGR)
 
         w = (
@@ -303,8 +311,6 @@ class DisplayFrame:
 if __name__ == "__main__":
     display = DisplayFrame()
     white_img = np.ones((480, 640, 3), dtype=np.uint8) * 255
-    blue_img = np.zeros((100, 100, 3), dtype=np.uint8)
-    blue_img[:, :, 0] = 255
 
     display.set_dynamic_img("Camera", white_img, (0, 0, 640, 480))
 
@@ -316,27 +322,30 @@ if __name__ == "__main__":
 
     display.set_counts(confirmed=5, entered=12)
 
-    # テスト用に画像を読み込み設定
-    test_left_img = cv.imread("Leftcheck.png", cv.IMREAD_UNCHANGED)  # アルファチャンネルも読み込む
-    test_right_img = cv.imread("Rightcheck.png", cv.IMREAD_UNCHANGED)  # アルファチャンネルも読み込む
+    test_left_img = cv.imread("Leftcheck.png", cv.IMREAD_UNCHANGED)
+    test_right_img = cv.imread("Rightcheck.png", cv.IMREAD_UNCHANGED)
+    # test_error_img = cv.imread("error.jpg", cv.IMREAD_UNCHANGED) # 削除
 
-    # 画像のサイズと位置を設定
-    img_width, img_height = 150, 150  # 表示サイズ
-    cam_w, cam_h = 640, 480  # カメラ画像の幅と高さ（テスト用）
+    img_width, img_height = 150, 247
+    cam_w, cam_h = 640, 480
 
-    # 左側の画像の位置（例: カメラ映像の左上）
-    left_img_x = 10
-    left_img_y = 10
+    left_img_x = cam_w - img_width - 10
+    left_img_y = 300
     display.set_check_image(
         "Left", test_left_img, (left_img_x, left_img_y, img_width, img_height)
     )
 
-    # 右側の画像の位置（例: カメラ映像の右上）
-    right_img_x = cam_w - img_width - 10
-    right_img_y = 10
+    right_img_x = 10
+    right_img_y = 300
     display.set_check_image(
         "Right", test_right_img, (right_img_x, right_img_y, img_width, img_height)
     )
+
+    # エラー画像表示のテストコードも削除
+    # error_img_w, error_img_h = 200, 200
+    # error_img_x = (cam_w - error_img_w) // 2
+    # error_img_y = cam_h - error_img_h - 10
+    # display.set_error_image(test_error_img, (error_img_x, error_img_y, error_img_w, error_img_h))
 
     display.update_display()
     if display.display_frame is not None:

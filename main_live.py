@@ -1,4 +1,5 @@
 import os
+import time
 
 # https://github.com/opencv/opencv/issues/17687
 os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
@@ -71,27 +72,33 @@ camera_thread.start()
 cv.namedWindow("Video", cv.WINDOW_NORMAL)
 cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
 
-# --- 新規追加: チェック画像を読み込む ---
+# --- チェック画像を読み込む ---
 right_check_img_path = project_root() / "Rightcheck.png"
 left_check_img_path = project_root() / "Leftcheck.png"
+# error_img_path = project_root() / "error.jpg" # 削除
 
 right_check_img = cv.imread(str(right_check_img_path), cv.IMREAD_UNCHANGED)
 left_check_img = cv.imread(str(left_check_img_path), cv.IMREAD_UNCHANGED)
+# error_img = cv.imread(str(error_img_path), cv.IMREAD_UNCHANGED) # 削除
 
 # 画像の表示サイズを定義
 check_img_display_width = 150
 check_img_display_height = 247
+# error_img_display_width = 200 # 削除
+# error_img_display_height = 200 # 削除
 
 if left_check_img is None:
     print(f"警告: {left_check_img_path} が見つからないか読み込めません。")
 if right_check_img is None:
     print(f"警告: {right_check_img_path} が見つからないか読み込めません。")
+# if error_img is None: # 削除
+#     print(f"警告: {error_img_path} が見つからないか読み込めません。")
 # ------------------------------------
 
 while True:
     (
         frame_timestamp_ms,
-        final_frame,
+        final_frame,  # recognition_thread から、ランドマークなしのフレームが来る
         landmark_array,
         params,
         events,
@@ -99,8 +106,17 @@ while True:
         dim_mask_needed,
         confirmed_count,
         entered_count,
+        # last_session_both_sides_confirmed, # 削除
     ) = event_detector.out_queue.get()
 
+    # display_frame には final_frame (認識スレッドからのオリジナル画像) を設定
+    # その上に event_detector が描画した ROI やベクトルを重ねる
+    # これまでのロジックでは final_frame が既に recognition_thread でアノテーション済み、
+    # さらに event_detector でアノテーション済みという想定だったが、
+    # 骨格点を消したので、display_frame の Camera には生のカメラ映像を渡し、
+    # その後で event_detector の描画結果を別途重ねる必要はない。
+    # event_detector の out_queue から受け取る final_frame は、
+    # 既に event_detector 内で ROI やベクトルが描画されたものとして扱う。
     if final_frame is not None:
         original_h, original_w, _ = final_frame.shape
         display_frame.set_dynamic_img(
@@ -122,12 +138,8 @@ while True:
     # カウント値の表示設定
     display_frame.set_counts(confirmed_count, entered_count)
 
-    # --- 新規追加: チェック画像の表示ロジック ---
-    # 画像の表示位置を計算（カメラ映像の左上と右上）
-    # final_frameがNoneの場合に備えてoriginal_w, original_hをチェック
-    cam_w, cam_h = (
-        (original_w, original_h) if final_frame is not None else (640, 480)
-    )  # デフォルト値
+    # --- チェック画像の表示ロジック ---
+    cam_w, cam_h = (original_w, original_h) if final_frame is not None else (640, 480)
 
     right_img_x = 10
     right_img_y = 300
@@ -135,21 +147,25 @@ while True:
     left_img_y = 300
 
     # Look Left かつ Point Left が検出されたらLeftcheck.pngを表示
-    if events.get("Look Left", {}).get("detected", False) and events.get(
-        "Point Left", {}
-    ).get("detected", False):
+    left_check_condition = events.get("Look Left", {}).get(
+        "detected", False
+    ) and events.get("Point Left", {}).get("detected", False)
+
+    if left_check_condition:
         display_frame.set_check_image(
             "Left",
             left_check_img,
             (left_img_x, left_img_y, check_img_display_width, check_img_display_height),
         )
     else:
-        display_frame.set_check_image("Left", None)  # 検出されなくなったらクリア
+        display_frame.set_check_image("Left", None)
 
     # Look Right かつ Point Right が検出されたらRightcheck.pngを表示
-    if events.get("Look Right", {}).get("detected", False) and events.get(
-        "Point Right", {}
-    ).get("detected", False):
+    right_check_condition = events.get("Look Right", {}).get(
+        "detected", False
+    ) and events.get("Point Right", {}).get("detected", False)
+
+    if right_check_condition:
         display_frame.set_check_image(
             "Right",
             right_check_img,
@@ -161,21 +177,18 @@ while True:
             ),
         )
     else:
-        display_frame.set_check_image("Right", None)  # 検出されなくなったらクリア
+        display_frame.set_check_image("Right", None)
     # ------------------------------------------
 
-    display_frame.update_display()
-
-    # リセットエリアに侵入した場合の処理
+    # --- リセットエリアに侵入した場合の処理 ---
     if event_detector.state == EventState.EXITED_ROI:
-        event_detector.reset()  # EventDetector内のイベント検出状態などをリセット
-        # display_frame.clear_all_dynamic_img() は呼び出さない (カウント等を保持するため)
-        # display_frame.reset_traffic_lights() はEventDetectorで処理されるため、ここも不要
-        display_frame.set_person_detection_info(None, False)  # 人物強調表示はクリア
-
-        # リセットエリアに入ったときにチェック画像もクリア
+        event_detector.reset()
+        display_frame.set_person_detection_info(None, False)
         display_frame.set_check_image("Left", None)
         display_frame.set_check_image("Right", None)
+    # --------------------------------------------------------------------------
+
+    display_frame.update_display()
 
     if is_recording:
         recorder.record_data(
