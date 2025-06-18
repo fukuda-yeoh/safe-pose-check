@@ -6,8 +6,10 @@ class DisplayFrame:
     def __init__(self):
         self.dynamic_frames = {
             "Camera": [None, (0, 0, 0, 0)],
-            "Image1": [None, (10, 10, 200, 200)],
-            "Image2": [None, (220, 10, 200, 200)],
+            # Image1とImage2は汎用的な枠として残しつつ、
+            # 今回はLeft/Rightcheck画像を専用で管理
+            "LeftCheckImage": [None, (0, 0, 0, 0)],  # 表示位置は動的に設定
+            "RightCheckImage": [None, (0, 0, 0, 0)],  # 表示位置は動的に設定
         }
         self.display_frame = None
 
@@ -24,9 +26,12 @@ class DisplayFrame:
         self.person_bbox = None
         self.dim_mask_needed = False
 
-        # カウント機能の追加
         self.confirmed_count = 0
         self.entered_count = 0
+
+        # 新しい画像プロパティ
+        self.left_check_img = None
+        self.right_check_img = None
 
     def set_dynamic_img(self, key, frame, pos_params=None):
         if key in self.dynamic_frames:
@@ -39,14 +44,15 @@ class DisplayFrame:
             self.dynamic_frames[key][0] = None
 
     def clear_all_dynamic_img(self):
+        # dynamic_framesに登録されているものをすべてクリア
         for key in self.dynamic_frames.keys():
             self.dynamic_frames[key][0] = None
         self.reset_traffic_lights()
         self.person_bbox = None
         self.dim_mask_needed = False
-        # カウントはクリアしない（累積のため）
-        # self.confirmed_count = 0 # 必要であればリセット
-        # self.entered_count = 0   # 必要であればリセット
+        # チェック画像もクリア
+        self.left_check_img = None
+        self.right_check_img = None
 
     def set_traffic_light_state(self, event_name, is_detected):
         if event_name in self.traffic_light_states:
@@ -61,13 +67,26 @@ class DisplayFrame:
         self.dim_mask_needed = dim_mask
 
     def set_counts(self, confirmed: int, entered: int):
-        """
-        カウント値を設定します。
-        :param confirmed: 判定項目すべてを検出した数
-        :param entered: 判定エリアに侵入した数
-        """
         self.confirmed_count = confirmed
         self.entered_count = entered
+
+    def set_check_image(
+        self, direction: str, image_data: np.ndarray = None, pos_params: tuple = None
+    ):
+        """
+        指定された方向のチェック画像を設定します。
+        :param direction: 'Left' または 'Right'
+        :param image_data: 表示する画像データ (Noneでクリア)
+        :param pos_params: (x, y, w, h) のタプルで、画像の表示位置とサイズ
+        """
+        if direction == "Left":
+            self.left_check_img = image_data
+            if pos_params:
+                self.dynamic_frames["LeftCheckImage"][1] = pos_params
+        elif direction == "Right":
+            self.right_check_img = image_data
+            if pos_params:
+                self.dynamic_frames["RightCheckImage"][1] = pos_params
 
     def update_display(self):
         camera_frame_data = self.dynamic_frames.get("Camera")
@@ -75,41 +94,47 @@ class DisplayFrame:
             camera_frame = camera_frame_data[0]
             self.display_frame = camera_frame.copy()
 
+            # 薄暗い効果を適用
             if self.dim_mask_needed and self.person_bbox:
                 self._apply_dim_effect(self.display_frame, self.person_bbox)
 
+            # 人物の枠を描画
             if self.person_bbox:
                 self._draw_person_bbox(self.display_frame, self.person_bbox)
 
-            for key, (img, params) in self.dynamic_frames.items():
-                if key != "Camera" and img is not None:
-                    self._paste(self.display_frame, img, *params)
+            # LeftCheckImageの貼り付け
+            if self.left_check_img is not None:
+                _, params = self.dynamic_frames["LeftCheckImage"]
+                self._paste(self.display_frame, self.left_check_img, *params)
 
-            if self.display_frame is not None:
+            # RightCheckImageの貼り付け
+            if self.right_check_img is not None:
+                _, params = self.dynamic_frames["RightCheckImage"]
+                self._paste(self.display_frame, self.right_check_img, *params)
+
+            # カウント表示の描画 (既存のロジック)
+            if self.display_frame is not None:  # カメラフレームがNoneでないことを再確認
                 frame_h, frame_w, _ = self.display_frame.shape
 
-                # カウント表示の描画
                 count_text = (
                     f"Confirmed {self.confirmed_count} / Entered {self.entered_count}"
                 )
                 font = cv.FONT_HERSHEY_SIMPLEX
                 font_scale = 0.8
                 font_thickness = 2
-                text_color = (255, 255, 255)  # 白
-                background_color = (0, 0, 0)  # 黒
+                text_color = (255, 255, 255)
+                background_color = (0, 0, 0)
 
                 (text_width, text_height), baseline = cv.getTextSize(
                     count_text, font, font_scale, font_thickness
                 )
 
-                # 表示位置を調整 (上部中央)
                 padding = 10
                 bg_x1 = (frame_w - text_width) // 2 - padding
                 bg_y1 = padding
                 bg_x2 = (frame_w + text_width) // 2 + padding
                 bg_y2 = padding + text_height + baseline + padding
 
-                # 黒い背景を描画
                 cv.rectangle(
                     self.display_frame,
                     (bg_x1, bg_y1),
@@ -118,9 +143,8 @@ class DisplayFrame:
                     -1,
                 )
 
-                # 白い文字でカウントを描画
                 text_x = (frame_w - text_width) // 2
-                text_y = padding + text_height + baseline // 2  # baselineを考慮して調整
+                text_y = padding + text_height + baseline // 2
                 cv.putText(
                     self.display_frame,
                     count_text,
@@ -167,7 +191,6 @@ class DisplayFrame:
                         1,
                         cv.LINE_AA,
                     )
-
         else:
             self.display_frame = None
 
@@ -226,10 +249,29 @@ class DisplayFrame:
 
     @staticmethod
     def _paste(dst, src, x, y, a, b):
+        # srcがNoneの場合は何もしない
+        if src is None:
+            return
+
         resized_img = cv.resize(src, (a, b))
 
+        # 貼り付け先の範囲をチェックし、はみ出す部分を調整
         if x >= dst.shape[1] or y >= dst.shape[0]:
             return
+
+        # 貼り付け元の画像が3チャンネルでない場合、3チャンネルに変換 (PNGのアルファチャンネル対応)
+        if resized_img.shape[2] == 4:  # RGBAの場合
+            # アルファチャンネルをマスクとして使用
+            alpha_s = resized_img[:, :, 3] / 255.0
+            alpha_l = 1.0 - alpha_s
+            for c in range(0, 3):
+                dst[y : y + b, x : x + a, c] = (
+                    alpha_s * resized_img[:, :, c]
+                    + alpha_l * dst[y : y + b, x : x + a, c]
+                )
+            return  # 貼り付け処理が完了したので終了
+        elif resized_img.shape[2] == 1:  # グレースケールの場合
+            resized_img = cv.cvtColor(resized_img, cv.COLOR_GRAY2BGR)
 
         w = (
             min(dst.shape[1] - x, resized_img.shape[1])
@@ -272,8 +314,29 @@ if __name__ == "__main__":
     test_bbox = (100, 100, 500, 400)
     display.set_person_detection_info(test_bbox, True)
 
-    # カウント値を設定してテスト
     display.set_counts(confirmed=5, entered=12)
+
+    # テスト用に画像を読み込み設定
+    test_left_img = cv.imread("Leftcheck.png", cv.IMREAD_UNCHANGED)  # アルファチャンネルも読み込む
+    test_right_img = cv.imread("Rightcheck.png", cv.IMREAD_UNCHANGED)  # アルファチャンネルも読み込む
+
+    # 画像のサイズと位置を設定
+    img_width, img_height = 150, 150  # 表示サイズ
+    cam_w, cam_h = 640, 480  # カメラ画像の幅と高さ（テスト用）
+
+    # 左側の画像の位置（例: カメラ映像の左上）
+    left_img_x = 10
+    left_img_y = 10
+    display.set_check_image(
+        "Left", test_left_img, (left_img_x, left_img_y, img_width, img_height)
+    )
+
+    # 右側の画像の位置（例: カメラ映像の右上）
+    right_img_x = cam_w - img_width - 10
+    right_img_y = 10
+    display.set_check_image(
+        "Right", test_right_img, (right_img_x, right_img_y, img_width, img_height)
+    )
 
     display.update_display()
     if display.display_frame is not None:
