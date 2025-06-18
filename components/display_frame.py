@@ -21,9 +21,12 @@ class DisplayFrame:
         self.light_margin = 30
         self.light_spacing = 80
 
-        # 新しいプロパティを追加
-        self.person_bbox = None  # 検出された人物のバウンディングボックス (x1, y1, x2, y2)
-        self.dim_mask_needed = False  # 薄暗いマスクが必要かどうか
+        self.person_bbox = None
+        self.dim_mask_needed = False
+
+        # カウント機能の追加
+        self.confirmed_count = 0
+        self.entered_count = 0
 
     def set_dynamic_img(self, key, frame, pos_params=None):
         if key in self.dynamic_frames:
@@ -39,9 +42,11 @@ class DisplayFrame:
         for key in self.dynamic_frames.keys():
             self.dynamic_frames[key][0] = None
         self.reset_traffic_lights()
-        # 全ての動的画像をクリアする際に人物の枠とマスク情報もクリア
         self.person_bbox = None
         self.dim_mask_needed = False
+        # カウントはクリアしない（累積のため）
+        # self.confirmed_count = 0 # 必要であればリセット
+        # self.entered_count = 0   # 必要であればリセット
 
     def set_traffic_light_state(self, event_name, is_detected):
         if event_name in self.traffic_light_states:
@@ -52,13 +57,17 @@ class DisplayFrame:
             self.traffic_light_states[key] = False
 
     def set_person_detection_info(self, bbox, dim_mask):
-        """
-        人物の検出情報（バウンディングボックスと薄暗いマスクの必要性）を設定します。
-        :param bbox: (x1, y1, x2, y2) 形式のバウンディングボックス座標、またはNone
-        :param dim_mask: 薄暗いマスクが必要な場合にTrue、不要な場合にFalse
-        """
         self.person_bbox = bbox
         self.dim_mask_needed = dim_mask
+
+    def set_counts(self, confirmed: int, entered: int):
+        """
+        カウント値を設定します。
+        :param confirmed: 判定項目すべてを検出した数
+        :param entered: 判定エリアに侵入した数
+        """
+        self.confirmed_count = confirmed
+        self.entered_count = entered
 
     def update_display(self):
         camera_frame_data = self.dynamic_frames.get("Camera")
@@ -66,11 +75,9 @@ class DisplayFrame:
             camera_frame = camera_frame_data[0]
             self.display_frame = camera_frame.copy()
 
-            # ここで薄暗い効果を適用
             if self.dim_mask_needed and self.person_bbox:
                 self._apply_dim_effect(self.display_frame, self.person_bbox)
 
-            # ここで人物の枠を描画
             if self.person_bbox:
                 self._draw_person_bbox(self.display_frame, self.person_bbox)
 
@@ -80,6 +87,52 @@ class DisplayFrame:
 
             if self.display_frame is not None:
                 frame_h, frame_w, _ = self.display_frame.shape
+
+                # カウント表示の描画
+                count_text = (
+                    f"Confirmed {self.confirmed_count} / Entered {self.entered_count}"
+                )
+                font = cv.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.8
+                font_thickness = 2
+                text_color = (255, 255, 255)  # 白
+                background_color = (0, 0, 0)  # 黒
+
+                (text_width, text_height), baseline = cv.getTextSize(
+                    count_text, font, font_scale, font_thickness
+                )
+
+                # 表示位置を調整 (上部中央)
+                padding = 10
+                bg_x1 = (frame_w - text_width) // 2 - padding
+                bg_y1 = padding
+                bg_x2 = (frame_w + text_width) // 2 + padding
+                bg_y2 = padding + text_height + baseline + padding
+
+                # 黒い背景を描画
+                cv.rectangle(
+                    self.display_frame,
+                    (bg_x1, bg_y1),
+                    (bg_x2, bg_y2),
+                    background_color,
+                    -1,
+                )
+
+                # 白い文字でカウントを描画
+                text_x = (frame_w - text_width) // 2
+                text_y = padding + text_height + baseline // 2  # baselineを考慮して調整
+                cv.putText(
+                    self.display_frame,
+                    count_text,
+                    (text_x, text_y),
+                    font,
+                    font_scale,
+                    text_color,
+                    font_thickness,
+                    cv.LINE_AA,
+                )
+
+                # 信号機の描画 (既存のロジック)
                 light_y = frame_h - self.light_margin - self.light_radius
 
                 light_names = ["Look Left", "Look Right", "Point Left", "Point Right"]
@@ -127,46 +180,26 @@ class DisplayFrame:
 
     @staticmethod
     def _draw_person_bbox(frame, bbox, color=(0, 255, 255), thickness=3):
-        """
-        人物のバウンディングボックスを描画します。
-        :param frame: 描画対象のフレーム
-        :param bbox: (x1, y1, x2, y2) 形式のバウンディングボックス座標
-        :param color: 枠の色 (BGR)
-        :param thickness: 枠の太さ
-        """
         x1, y1, x2, y2 = bbox
         cv.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
     @staticmethod
     def _apply_dim_effect(frame, bbox, dim_factor=0.6):
-        """
-        バウンディングボックスの周囲を薄暗くする効果を適用します。
-        :param frame: 処理対象のフレーム
-        :param bbox: (x1, y1, x2, y2) 形式のバウンディングボックス座標
-        :param dim_factor: 薄暗くする度合い (0.0:完全に透明, 1.0:完全に黒)
-        """
         overlay = frame.copy()
         output = frame.copy()
 
-        # マスクの作成 (人物の枠内は透明、それ以外は黒)
         mask = np.zeros(frame.shape, dtype=np.uint8)
         x1, y1, x2, y2 = bbox
 
-        # 枠内は白 (255, 255, 255) に設定
         cv.rectangle(mask, (x1, y1), (x2, y2), (255, 255, 255), -1)
 
-        # マスクの反転（枠外が白、枠内が黒）
         mask_inv = cv.bitwise_not(mask)
 
-        # 薄暗くする部分のオーバーレイを作成
-        # 薄暗くするエリアだけを抽出し、指定のdim_factorで暗くする
         dim_area = cv.bitwise_and(overlay, mask_inv)
         dim_area = cv.convertScaleAbs(dim_area * dim_factor)
 
-        # 枠内は元の画像をそのまま使用
         person_area = cv.bitwise_and(overlay, mask)
 
-        # 結合して最終的な画像を作成
         cv.add(dim_area, person_area, output)
 
         frame[:] = output[:]
@@ -236,9 +269,11 @@ if __name__ == "__main__":
     display.set_traffic_light_state("Look Left", True)
     display.set_traffic_light_state("Point Right", True)
 
-    # テスト用バウンディングボックスと薄暗い効果
-    test_bbox = (100, 100, 500, 400)  # 例のバウンディングボックス
-    display.set_person_detection_info(test_bbox, True)  # 薄暗いマスクを適用
+    test_bbox = (100, 100, 500, 400)
+    display.set_person_detection_info(test_bbox, True)
+
+    # カウント値を設定してテスト
+    display.set_counts(confirmed=5, entered=12)
 
     display.update_display()
     if display.display_frame is not None:

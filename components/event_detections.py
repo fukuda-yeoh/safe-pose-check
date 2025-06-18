@@ -54,15 +54,26 @@ class EventDetector:
             "PR_score": 0,
         }
 
-        # 新しいプロパティを追加
-        self.person_bbox = None  # 検出された人物のバウンディングボックス
-        self.dim_mask_needed = False  # 薄暗いマスクが必要かどうか
+        self.person_bbox = None
+        self.dim_mask_needed = False
+
+        self.entered_count = 0
+        self.confirmed_count = 0
+        self._previous_state = EventState.NO_PERSON
+
+        # Confirmedカウントを制御するためのフラグ
+        self._confirmed_for_current_entry = False
 
     def reset(self):
-        self.events = self.default_event()
+        # カウントはリセットしない
+        # self.entered_count = 0
+        # self.confirmed_count = 0
+        self.events = self.default_event()  # イベント検出状態はリセット
         self.scores = {key: 0 for key in self.scores}
-        self.person_bbox = None  # リセット時にバウンディングボックスもクリア
-        self.dim_mask_needed = False  # マスクのフラグもリセット
+        self.person_bbox = None
+        self.dim_mask_needed = False
+        self._previous_state = EventState.NO_PERSON
+        self._confirmed_for_current_entry = False  # リセットエリアに出たらこのフラグをリセット
 
     @staticmethod
     def default_event():
@@ -102,11 +113,9 @@ class EventDetector:
         }
 
     def update_scores(self, params):
-        # ROI内に存在するか
         if not params.get("in_roi", False):
             return
 
-        # headのスコア計算
         self.scores["LL_score"] = max(
             self.scores["LL_score"], calculate_score_l(params["head"], 25, 90)
         )
@@ -114,7 +123,6 @@ class EventDetector:
             self.scores["LR_score"], calculate_score_r(params["head"], 90, 155)
         )
 
-        # forearmのスコア計算
         if params["arm_high"] > 0.6:
             self.scores["PL_score"] = max(
                 self.scores["PL_score"], calculate_score_l(params["forearm"], 25, 90)
@@ -127,21 +135,17 @@ class EventDetector:
         while not self.stop_flag:
             result, timestamp, frame = in_queue.get()
             person_bbox_coords = None
-            dim_mask_needed = False  # ここで初期化
+            dim_mask_needed = False
 
-            # 変更点: result.pose_landmarks が空でないことを確認し、最初の人物のランドマークを取得
             if result.pose_landmarks and len(result.pose_landmarks) > 0:
-                # 最初の人物のランドマークリストを取得
                 person_pose_landmarks = result.pose_landmarks[0]
-                landmark_array = landmarks_to_array(person_pose_landmarks)  # ここも変更
+                landmark_array = landmarks_to_array(person_pose_landmarks)
 
-                # ここで人物のバウンディングボックスを計算
-                min_x = min([lmk.x for lmk in person_pose_landmarks])  # ここも変更
-                max_x = max([lmk.x for lmk in person_pose_landmarks])  # ここも変更
-                min_y = min([lmk.y for lmk in person_pose_landmarks])  # ここも変更
-                max_y = max([lmk.y for lmk in person_pose_landmarks])  # ここも変更
+                min_x = min([lmk.x for lmk in person_pose_landmarks])
+                max_x = max([lmk.x for lmk in person_pose_landmarks])
+                min_y = min([lmk.y for lmk in person_pose_landmarks])
+                max_y = max([lmk.y for lmk in person_pose_landmarks])
 
-                # フレームサイズを考慮してピクセル座標に変換
                 h, w, _ = frame.shape
                 x1 = int(min_x * w)
                 y1 = int(min_y * h)
@@ -153,26 +157,26 @@ class EventDetector:
 
                 self.update_scores(params)
 
-                # draw_landmarks_on_image には元の pose_landmarks_list (ネストされたリスト) を渡すか、
-                # あるいは現在の処理に合わせて person_pose_landmarks を渡すか調整が必要
-                # 今回はperson_pose_landmarksを渡すように変更
                 annotated_image = draw_landmarks_on_image(
-                    annotated_image, person_pose_landmarks  # ここも変更
+                    annotated_image, person_pose_landmarks
                 )
                 annotated_image = self.draw_roi(
                     annotated_image,
                 )
                 frame = annotated_image
-                events = self.events
-                dim_mask_needed = True  # 人物が検出されたらマスクが必要
+                events = self.events  # runメソッドで更新されたeventsを使用
+                dim_mask_needed = True
             else:
                 frame = self.draw_roi(
                     frame,
                 )
                 landmark_array = None
                 params = None
-                events = {}
-                dim_mask_needed = False  # 人物が検出されなかったらマスクは不要
+                events = {}  # 人物がいない場合はイベントもなし
+                dim_mask_needed = False
+                self.state = EventState.NO_PERSON
+                self._previous_state = EventState.NO_PERSON
+                self._confirmed_for_current_entry = False  # 人物がいなくなったらConfirmedフラグもリセット
 
             self.out_queue.put(
                 (
@@ -183,38 +187,50 @@ class EventDetector:
                     events,
                     person_bbox_coords,
                     dim_mask_needed,
+                    self.confirmed_count,
+                    self.entered_count,
                 )
             )
 
     def run(self, landmark_array, frame=None):
-        # メインROI内か判定
         in_roi = self.feet_inside_roi(landmark_array)
         in_clear_roi = self.feet_inside_clear_roi(landmark_array)
 
-        # stateの更新ロジックを微調整
+        # 新しい状態を決定する前に、現在の状態を保存
+        self._previous_state = self.state
+
         if in_roi:
-            # ROI内にいる場合は常にENTERED_ROI
             self.state = EventState.ENTERED_ROI
+            # 以前ENTERED_ROI状態ではなかった場合のみカウント
+            if self._previous_state != EventState.ENTERED_ROI:
+                self.entered_count += 1
+                self._confirmed_for_current_entry = False  # 新しい侵入でConfirmedフラグをリセット
         elif in_clear_roi:
-            # クリアROIにいるがメインROI外の場合はEXITED_ROI
             self.state = EventState.EXITED_ROI
+            # リセットエリアに入ったら、Confirmedカウントフラグをリセットする
+            self._confirmed_for_current_entry = False
+            # ここでイベント検出状態もリセット（信号機を赤に戻すため）
+            self.reset_events_detected_state()
         else:
-            # どちらのROIにもいない場合はNO_PERSON
             self.state = EventState.NO_PERSON
+            # 人物がいなくなったらConfirmedカウントフラグをリセット
+            self._confirmed_for_current_entry = False
+            # 人物がいなくなったらイベント検出状態もリセット
+            self.reset_events_detected_state()
 
         eye_vec = self.get_vector(landmark_array, "left eye", "right eye")
         down_vec = self.get_vector(landmark_array, "mid eye", "mid mouth")
 
-        # head vector
         head_vec = self.cross_vector(eye_vec, down_vec)
         head_vec_angle = self.get_angle_vector(head_vec)
 
-        # forearm vector
         forearm_vec = self.get_vector(landmark_array, "right elbow", "right wrist")
         forearm_vec_angle = self.get_angle_vector(forearm_vec)
 
         high = self.get_high(landmark_array, "mid ankle", "nose")
-        arm_high = self.get_high(landmark_array, "mid ankle", "right wrist") / high
+        arm_high = self.get_high(landmark_array, "mid ankle", "right wrist") / (
+            high if high != 0 else 1
+        )
 
         params = {
             "in_roi": in_roi,
@@ -223,38 +239,68 @@ class EventDetector:
             "arm_high": arm_high,
         }
 
-        if self.state == EventState.ENTERED_ROI:  # ROIに入ったときのみイベントチェック
-            self.check_events(params, landmark_array, frame)
-        else:  # ROI外に出たらイベントの状態をリセット
+        # Confirmedのカウントは、一度の進入につき一度のみ
+        if self.state == EventState.ENTERED_ROI:
+            # 既に今回の進入でConfirmedがカウントされていなければチェック
+            if not self._confirmed_for_current_entry:
+                self.check_events(params, landmark_array, frame)
+                all_events_detected = all(
+                    event["detected"] for event in self.events.values()
+                )
+                if all_events_detected:
+                    self.confirmed_count += 1
+                    self._confirmed_for_current_entry = True  # カウント済みフラグをTrueに
+                    # 全て検出されたら、イベントの状態をリセット
+                    # ただし、信号機はリセットエリアまで保持するため、ここのreset_events_detected_state()は不要
+                    # 必要に応じて、イベントの`detected`フラグは保持しつつ、`previous`だけリセットするなどの調整が可能
+                    # 今回は、検出されたら信号機は青に保持されるので、イベントの状態自体は保持
+                    pass
+            else:
+                # 既に今回の進入でConfirmedがカウントされている場合、イベント検出は行わない
+                # ただし、信号機は保持されている状態にする
+                pass
+        else:
+            # ROI外またはリセットエリアにいる場合、イベント検出状態をリセット
+            # これは信号機を赤に戻す目的
             self.reset_events_detected_state()
 
         if frame is not None:
             frame = self.draw_roi(frame)
             frame = self.draw_clear_roi(frame)
-            frame = self.draw_vector(frame, landmark_array, "nose", head_vec)
-            frame = self.draw_vector(frame, landmark_array, "right elbow", forearm_vec)
+            if landmark_array is not None:
+                frame = self.draw_vector(frame, landmark_array, "nose", head_vec)
+                frame = self.draw_vector(
+                    frame, landmark_array, "right elbow", forearm_vec
+                )
 
         return params, frame, self.events
 
     def reset_events_detected_state(self):
-        """全てのイベントの'detected'フラグをFalseにリセットします。"""
+        """
+        全てのイベントの'detected'フラグをFalseにリセットします。
+        これは主に信号機を赤に戻す目的で使用されます。
+        """
         for name in self.events:
             self.events[name]["detected"] = False
-            self.events[name]["previous"] = 0  # previousもリセットして、再度検出可能にする
-            self.events[name]["crop"] = None  # クロップ画像もクリア
+            # previousもリセットしない (累積のため)
+            # self.events[name]["previous"] = 0
+            self.events[name]["crop"] = None
 
     def check_events(self, params, landmark_array, frame=None):
         for name, event in self.events.items():
             param = params[event["param"]]
             if eval(event["conditional"]):
                 event["detected"] = True
+                # previousは最高値を保持する目的
                 if abs(param) > event["previous"]:
                     event["previous"] = param
+                    # クロップ画像は今回表示しないため、この部分は不要だが残しておく
                     if frame is not None:
                         height, width, _ = frame.shape
                         center = self.get_point(landmark_array, event["landmark"])
-                        center[0] *= width
-                        center[1] *= height
+                        if center[0] <= 1.0 and center[1] <= 1.0:
+                            center[0] *= width
+                            center[1] *= height
                         event["crop"] = self.crop_event(frame, center)
 
     def crop_event(self, frame, center):
@@ -268,7 +314,6 @@ class EventDetector:
         if y_start < 0:
             y_end += abs(y_start)
             y_start = 0
-        # フレームの幅と高さを動的に取得
         frame_width = frame.shape[1]
         frame_height = frame.shape[0]
         if x_end > frame_width:
@@ -285,21 +330,17 @@ class EventDetector:
         return cropped_frame
 
     def feet_inside_roi(self, landmark_array):
-        """両足が指定領域内にあるかを判定"""
-        if landmark_array is None:  # ランドマークがない場合はFalse
+        if landmark_array is None:
             return False
         left_ankle = self.get_point(landmark_array, "left ankle")
         right_ankle = self.get_point(landmark_array, "right ankle")
         return self.point_inside_roi(left_ankle) and self.point_inside_roi(right_ankle)
 
     def point_inside_roi(self, point):
-        # `cv2.pointPolygonTest`により、pointが多角形内にあるかどうかを判定
-        # 戻り値が1.0の場合は内側、-1.0の場合は外側
         return cv.pointPolygonTest(self.roi_points, (point[0], point[1]), False) >= 0
 
     def feet_inside_clear_roi(self, landmark_array):
-        """両足がクリア領域内にあるかを判定"""
-        if landmark_array is None:  # ランドマークがない場合はFalse
+        if landmark_array is None:
             return False
         left_ankle = self.get_point(landmark_array, "left ankle")
         right_ankle = self.get_point(landmark_array, "right ankle")
@@ -308,93 +349,79 @@ class EventDetector:
         )
 
     def point_inside_clear_roi(self, point):
-        """`cv2.pointPolygonTest`により、pointがクリア領域内にあるかを判定"""
         return (
             cv.pointPolygonTest(self.clear_roi_points, (point[0], point[1]), False) >= 0
         )
 
     def get_point(self, landmark_array, name):
-        """指定した特徴点の骨格情報を取得"""
+        if landmark_array is None:
+            return np.array([0, 0, 0])
+
         if name in self.labels:
             return get_pos_array(landmark_array, self.labels, name)[:3].copy()
         elif name in self.virtual_points:
             return self.virtual_points[name](landmark_array)
-        return np.array([0, 0, 0])  # ランドマークが見つからない場合のデフォルト値
+        return np.array([0, 0, 0])
 
     def get_shoulder_midpoint(self, landmark_array):
-        """右肩と左肩の中点を計算"""
         left_shoulder = self.get_point(landmark_array, "left shoulder")
         right_shoulder = self.get_point(landmark_array, "right shoulder")
         return (left_shoulder + right_shoulder) / 2
 
     def get_eye_midpoint(self, landmark_array):
-        """右目と左目の中点を計算"""
         left_eye = self.get_point(landmark_array, "left eye")
         right_eye = self.get_point(landmark_array, "right eye")
         return (left_eye + right_eye) / 2
 
     def get_mouth_midpoint(self, landmark_array):
-        """右口と左口の中点を計算"""
         left_mouth = self.get_point(landmark_array, "mouth (left)")
         right_mouth = self.get_point(landmark_array, "mouth (right)")
         return (left_mouth + right_mouth) / 2
 
     def get_ankle_midpoint(self, landmark_array):
-        """右口と左口の中点を計算"""
         left_ankle = self.get_point(landmark_array, "left ankle")
         right_ankle = self.get_point(landmark_array, "right ankle")
         return (left_ankle + right_ankle) / 2
 
     def get_high(self, landmark_array, start, end):
-        """startからendのベクトルを計算"""
-        start_y = self.get_point(landmark_array, start)[1]
-        end_y = self.get_point(landmark_array, end)[1]
-        return start_y - end_y
+        start_point = self.get_point(landmark_array, start)
+        end_point = self.get_point(landmark_array, end)
+        return start_point[1] - end_point[1]
 
     def draw_roi(self, frame):
-        """ROI領域を描画する関数"""
         if self.roi_points is not None and len(self.roi_points) > 0:
-            # ROIの4つの頂点を使用して描画
             frame = draw_roi_on_image(frame, self.roi_points)
         return frame
 
     def draw_clear_roi(self, frame):
-        """CLEAR_ROI領域を描画する関数"""
         if self.clear_roi_points is not None and len(self.clear_roi_points) > 0:
-            # ROIの4つの頂点を使用して描画
             frame = draw_clear_roi_on_image(frame, self.clear_roi_points)
         return frame
 
     def get_vector(self, landmark_array, start, end):
-        """startからendのベクトルを計算"""
         start_point = self.get_point(landmark_array, start)
         end_point = self.get_point(landmark_array, end)
         return end_point - start_point
 
     def cross_vector(self, start, end):
-        """外積を計算"""
         return np.cross(start * 10, end * 10)
 
     @staticmethod
     def get_angle_vector(vec):
-        """vecの水平成分を計算(正規化含む)"""
-        # ROIで定義された方向ベクトルの取得
         roi_vec = np.array([0.39939338, -0.00622076, 0.02112389])
         vec_scale = np.linalg.norm(vec)
         roi_vec_scale = np.linalg.norm(roi_vec)
 
-        if vec_scale == 0 or roi_vec_scale == 0:  # ゼロベクトル除算回避
+        if vec_scale == 0 or roi_vec_scale == 0:
             return 0
 
         dot_product = np.dot(vec, roi_vec)
         cos_theta = dot_product / (vec_scale * roi_vec_scale)
-        # cos_thetaが[-1, 1]の範囲に収まるようにクリップ
         cos_theta = np.clip(cos_theta, -1.0, 1.0)
         theta = np.arccos(cos_theta) * 180 / np.pi
         return theta
 
     def draw_vector(self, frame, landmark_array, start, vec, *args, **kwargs):
-        """ベクトルの描画"""
         start_point = self.get_point(landmark_array, start)
         return draw_arrow_on_image(
             frame, start_point[:2], (start_point[:2] + vec[:2]), *args, **kwargs

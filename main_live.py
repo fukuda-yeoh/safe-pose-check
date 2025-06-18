@@ -78,8 +78,10 @@ while True:
         landmark_array,
         params,
         events,
-        person_bbox_coords,  # 追加
-        dim_mask_needed,  # 追加
+        person_bbox_coords,
+        dim_mask_needed,
+        confirmed_count,
+        entered_count,
     ) = event_detector.out_queue.get()
 
     if final_frame is not None:
@@ -91,25 +93,30 @@ while True:
         display_frame.clear_dynamic_img("Camera")
 
     # 信号機の状態更新ロジック
+    # event_detections.pyでdetectedフラグがリセットエリアでしかリセットされないため、
+    # ここではイベントが検出されていれば青、そうでなければ赤に設定
     for name, event_data in events.items():
         display_frame.set_traffic_light_state(name, event_data["detected"])
 
-    # ここに人物の枠と薄暗い効果の設定ロジックを追加
-    # EventState.ENTERED_ROI の場合にのみ、人物を強調表示
+    # 人物の枠と薄暗い効果の設定ロジック
     if event_detector.state == EventState.ENTERED_ROI:
         display_frame.set_person_detection_info(person_bbox_coords, dim_mask_needed)
     else:
-        # ROI外に出たり人物がいない場合は、枠とマスクをクリア
         display_frame.set_person_detection_info(None, False)
+
+    # カウント値の表示設定
+    display_frame.set_counts(confirmed_count, entered_count)
 
     display_frame.update_display()
 
+    # リセットエリアに侵入した場合の処理
     if event_detector.state == EventState.EXITED_ROI:
-        event_detector.reset()
-        display_frame.clear_all_dynamic_img()
-        display_frame.reset_traffic_lights()
-        # ROI外に出たときに人物強調表示もクリア
-        display_frame.set_person_detection_info(None, False)
+        # EventDetector内部のイベント検出状態と_previous_stateはリセットされるが、
+        # カウントは保持される
+        event_detector.reset()  # EventDetector内のイベント検出状態などをリセット
+        # 画面上の表示はEventDetectorからの更新に任せる（信号機は自動的に赤に戻る）
+        # display_frame.clear_all_dynamic_img() # これは全ての動的画像をクリアしてしまうので注意
+        # display_frame.reset_traffic_lights() # これはEventDetectorで既に処理される
 
     if is_recording:
         recorder.record_data(
