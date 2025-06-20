@@ -6,8 +6,6 @@ class DisplayFrame:
     def __init__(self):
         self.dynamic_frames = {
             "Camera": [None, (0, 0, 0, 0)],
-            "LeftCheckImage": [None, (0, 0, 0, 0)],
-            "RightCheckImage": [None, (0, 0, 0, 0)],
         }
         self.display_frame = None
 
@@ -27,10 +25,12 @@ class DisplayFrame:
         self.confirmed_count = 0
         self.entered_count = 0
 
-        self.left_check_img = None
-        self.right_check_img = None
-        # self.error_img = None # 削除
-        # self.error_img_pos = (0, 0, 0, 0) # 削除
+        self.text_feedbacks = {
+            "Look Left": ["Look Left", "OK", None],
+            "Look Right": ["Look Right", "OK", None],
+            "Point Left": ["Point Left", "OK", None],
+            "Point Right": ["Point Right", "OK", None],
+        }
 
     def set_dynamic_img(self, key, frame, pos_params=None):
         if key in self.dynamic_frames:
@@ -48,9 +48,7 @@ class DisplayFrame:
         self.reset_traffic_lights()
         self.person_bbox = None
         self.dim_mask_needed = False
-        self.left_check_img = None
-        self.right_check_img = None
-        # self.error_img = None # 削除
+        self.clear_text_feedbacks()
 
     def set_traffic_light_state(self, event_name, is_detected):
         if event_name in self.traffic_light_states:
@@ -68,22 +66,19 @@ class DisplayFrame:
         self.confirmed_count = confirmed
         self.entered_count = entered
 
-    def set_check_image(
-        self, direction: str, image_data: np.ndarray = None, pos_params: tuple = None
-    ):
-        if direction == "Left":
-            self.left_check_img = image_data
-            if pos_params:
-                self.dynamic_frames["LeftCheckImage"][1] = pos_params
-        elif direction == "Right":
-            self.right_check_img = image_data
-            if pos_params:
-                self.dynamic_frames["RightCheckImage"][1] = pos_params
+    def set_text_feedback(self, event_name: str, display_pos_pixels: tuple = None):
+        """
+        指定されたイベントのテキストフィードバックを設定します。
+        :param event_name: 判定項目名 (例: "Look Left")
+        :param display_pos_pixels: (x, y) 形式のピクセル座標 (Noneでクリア)
+        """
+        if event_name in self.text_feedbacks:
+            self.text_feedbacks[event_name][2] = display_pos_pixels
 
-    # def set_error_image(self, image_data: np.ndarray = None, pos_params: tuple = None): # 削除
-    #     self.error_img = image_data
-    #     if pos_params:
-    #         self.error_img_pos = pos_params
+    def clear_text_feedbacks(self):
+        """全てのテキストフィードバックをクリアします。"""
+        for key in self.text_feedbacks:
+            self.text_feedbacks[key][2] = None
 
     def update_display(self):
         camera_frame_data = self.dynamic_frames.get("Camera")
@@ -99,19 +94,106 @@ class DisplayFrame:
             if self.person_bbox:
                 self._draw_person_bbox(self.display_frame, self.person_bbox)
 
-            # LeftCheckImageの貼り付け
-            if self.left_check_img is not None:
-                _, params = self.dynamic_frames["LeftCheckImage"]
-                self._paste(self.display_frame, self.left_check_img, *params)
+            # テキストフィードバックの描画
+            for event_name, (
+                text_line1,
+                text_line2,
+                pos,
+            ) in self.text_feedbacks.items():
+                if pos is not None:
+                    font = cv.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.6
+                    font_thickness = 2
+                    text_color = (255, 255, 255)  # 白
+                    background_color = (0, 0, 0)  # 黒
 
-            # RightCheckImageの貼り付け
-            if self.right_check_img is not None:
-                _, params = self.dynamic_frames["RightCheckImage"]
-                self._paste(self.display_frame, self.right_check_img, *params)
+                    # 各行のサイズを取得
+                    (w1, h1), b1 = cv.getTextSize(
+                        text_line1, font, font_scale, font_thickness
+                    )
+                    (w2, h2), b2 = cv.getTextSize(
+                        text_line2, font, font_scale, font_thickness
+                    )
 
-            # エラー画像の貼り付け (削除)
-            # if self.error_img is not None:
-            #     self._paste(self.display_frame, self.error_img, *self.error_img_pos)
+                    # テキスト全体の幅と高さを計算 (パディングを含む)
+                    line_spacing = 5  # 行間のピクセル数
+                    padding_h = 5  # 上下のパディング
+                    padding_w = 5  # 左右のパディング
+
+                    # 2行分の高さ + 行間のスペース + 各行のベースラインの合計 + 上下のパディング
+                    total_text_h_content = h1 + h2 + line_spacing
+                    total_text_h_with_padding = (
+                        total_text_h_content + 2 * padding_h + b1 + b2
+                    )
+
+                    max_text_w = max(w1, w2)
+                    total_text_w_with_padding = max_text_w + 2 * padding_w
+
+                    # ランドマーク位置はpos (x, y)
+                    # Look Left / Point Left は左下座標に合わせる
+                    # Look Right / Point Right は右下座標に合わせる
+
+                    # 背景の左上隅のX座標を計算
+                    if "Left" in event_name:
+                        bg_x1 = pos[0] - padding_w
+                    elif "Right" in event_name:
+                        bg_x1 = pos[0] - total_text_w_with_padding + padding_w
+                    else:  # Fallback
+                        bg_x1 = pos[0] - padding_w
+
+                    # 背景の左上隅のY座標を計算
+                    bg_y1 = pos[1] - total_text_h_with_padding
+
+                    # 背景の右下隅のX, Y座標を計算
+                    bg_x2 = bg_x1 + total_text_w_with_padding
+                    bg_y2 = bg_y1 + total_text_h_with_padding
+
+                    # テキストを背景内で中央揃えに描画
+                    # 最初の行のY座標 (背景の上端 + パディング_Y + (行の高さ / 2)) + (全体のコンテンツ高さ - 行の高さ) / 2
+                    # 修正: text1_y の計算で、全体の高さに対する位置を考慮する
+                    text1_y = (
+                        bg_y1
+                        + padding_h
+                        + h1
+                        + b1
+                        + (total_text_h_content - (h1 + h2 + line_spacing)) // 2
+                    )
+                    text2_y = text1_y + h2 + b2 + line_spacing
+
+                    # 各行のX座標は背景内で中央揃え
+                    text1_x = bg_x1 + (total_text_w_with_padding - w1) // 2
+                    text2_x = bg_x1 + (total_text_w_with_padding - w2) // 2
+
+                    # 背景の矩形を描画
+                    cv.rectangle(
+                        self.display_frame,
+                        (bg_x1, bg_y1),
+                        (bg_x2, bg_y2),
+                        background_color,
+                        -1,
+                    )
+
+                    # テキストを描画
+                    cv.putText(
+                        self.display_frame,
+                        text_line1,
+                        (text1_x, text1_y),
+                        font,
+                        font_scale,
+                        text_color,
+                        font_thickness,
+                        cv.LINE_AA,
+                    )
+                    cv.putText(
+                        self.display_frame,
+                        text_line2,
+                        (text2_x, text2_y),
+                        font,
+                        font_scale,
+                        text_color,
+                        font_thickness,
+                        cv.LINE_AA,
+                    )
 
             # カウント表示の描画 (既存のロジック)
             if self.display_frame is not None:
@@ -208,7 +290,7 @@ class DisplayFrame:
         cv.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
     @staticmethod
-    def _apply_dim_effect(frame, bbox, dim_factor=0.6):
+    def _apply_dim_effect(frame, bbox, dim_factor=0.8):
         overlay = frame.copy()
         output = frame.copy()
 
@@ -322,30 +404,13 @@ if __name__ == "__main__":
 
     display.set_counts(confirmed=5, entered=12)
 
-    test_left_img = cv.imread("Leftcheck.png", cv.IMREAD_UNCHANGED)
-    test_right_img = cv.imread("Rightcheck.png", cv.IMREAD_UNCHANGED)
-    # test_error_img = cv.imread("error.jpg", cv.IMREAD_UNCHANGED) # 削除
-
-    img_width, img_height = 150, 247
+    # テキストフィードバックのテスト
     cam_w, cam_h = 640, 480
+    test_nose_pos = (int(0.5 * cam_w), int(0.3 * cam_h))  # 鼻のテスト座標
+    test_wrist_pos = (int(0.7 * cam_w), int(0.6 * cam_h))  # 手首のテスト座標
 
-    left_img_x = cam_w - img_width - 10
-    left_img_y = 300
-    display.set_check_image(
-        "Left", test_left_img, (left_img_x, left_img_y, img_width, img_height)
-    )
-
-    right_img_x = 10
-    right_img_y = 300
-    display.set_check_image(
-        "Right", test_right_img, (right_img_x, right_img_y, img_width, img_height)
-    )
-
-    # エラー画像表示のテストコードも削除
-    # error_img_w, error_img_h = 200, 200
-    # error_img_x = (cam_w - error_img_w) // 2
-    # error_img_y = cam_h - error_img_h - 10
-    # display.set_error_image(test_error_img, (error_img_x, error_img_y, error_img_w, error_img_h))
+    display.set_text_feedback("Look Left", test_nose_pos)
+    display.set_text_feedback("Point Right", test_wrist_pos)
 
     display.update_display()
     if display.display_frame is not None:

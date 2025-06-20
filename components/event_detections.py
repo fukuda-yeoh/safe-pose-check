@@ -8,7 +8,7 @@ import numpy as np
 from funcs.calc_score import calculate_score_l, calculate_score_r
 from funcs.landmark_funcs import (
     get_pos_array,
-    # draw_arrow_on_image, # 削除
+    draw_arrow_on_image,
     draw_roi_on_image,
     draw_clear_roi_on_image,
     landmarks_to_array,
@@ -81,6 +81,8 @@ class EventDetector:
                 "previous": 0,
                 "crop": None,
                 "detected": False,
+                "display_landmark": "nose",  # 修正: 目視確認は鼻の座標を参照
+                "display_pos": None,
             },
             "Look Right": {
                 "param": "head",
@@ -89,6 +91,8 @@ class EventDetector:
                 "previous": 0,
                 "crop": None,
                 "detected": False,
+                "display_landmark": "nose",  # 修正: 目視確認は鼻の座標を参照
+                "display_pos": None,
             },
             "Point Left": {
                 "param": "arm_high",
@@ -97,6 +101,8 @@ class EventDetector:
                 "previous": 0,
                 "crop": None,
                 "detected": False,
+                "display_landmark": "right wrist",  # 指差し確認は右手首
+                "display_pos": None,
             },
             "Point Right": {
                 "param": "arm_high",
@@ -105,6 +111,8 @@ class EventDetector:
                 "previous": 0,
                 "crop": None,
                 "detected": False,
+                "display_landmark": "right wrist",  # 指差し確認は右手首
+                "display_pos": None,
             },
         }
 
@@ -143,10 +151,20 @@ class EventDetector:
                 max_y = max([lmk.y for lmk in person_pose_landmarks])
 
                 h, w, _ = frame.shape
-                x1 = int(min_x * w)
-                y1 = int(min_y * h)
-                x2 = int(max_x * w)
-                y2 = int(max_y * h)
+
+                margin_x = int(w * 0.05)
+                margin_y = int(h * 0.05)
+
+                x1 = int(min_x * w) - margin_x
+                y1 = int(min_y * h) - margin_y
+                x2 = int(max_x * w) + margin_x
+                y2 = int(max_y * h) + margin_y
+
+                x1 = max(0, x1)
+                y1 = max(0, y1)
+                x2 = min(w, x2)
+                y2 = min(h, y2)
+
                 person_bbox_coords = (x1, y1, x2, y2)
 
                 params, frame_with_roi, events = self.run(landmark_array, frame)
@@ -236,13 +254,25 @@ class EventDetector:
                     self.confirmed_count += 1
                     self._confirmed_for_current_entry = True
 
+        # イベントごとの表示位置を更新
+        if landmark_array is not None:
+            for name, event in self.events.items():
+                if event["detected"] and event.get("display_landmark"):
+                    display_point = self.get_point(
+                        landmark_array, event["display_landmark"]
+                    )
+                    event["display_pos"] = (display_point[0], display_point[1])
+                else:
+                    event["display_pos"] = None
+
         if frame is not None:
             frame = self.draw_roi(frame)
             frame = self.draw_clear_roi(frame)
-            # 腕と顔のベクトルの描画を削除
-            # if landmark_array is not None:
-            #     frame = self.draw_vector(frame, landmark_array, "nose", head_vec)
-            #     frame = self.draw_vector(frame, landmark_array, "right elbow", forearm_vec)
+            if landmark_array is not None:
+                frame = self.draw_vector(frame, landmark_array, "nose", head_vec)
+                frame = self.draw_vector(
+                    frame, landmark_array, "right elbow", forearm_vec
+                )
 
         return params, frame, self.events
 
@@ -251,6 +281,7 @@ class EventDetector:
             self.events[name]["detected"] = False
             self.events[name]["previous"] = 0
             self.events[name]["crop"] = None
+            self.events[name]["display_pos"] = None
 
     def check_events(self, params, landmark_array, frame=None):
         for name, event in self.events.items():
@@ -385,11 +416,11 @@ class EventDetector:
         theta = np.arccos(cos_theta) * 180 / np.pi
         return theta
 
-    # def draw_vector(self, frame, landmark_array, start, vec, *args, **kwargs):
-    # start_point = self.get_point(landmark_array, start)
-    # return draw_arrow_on_image(
-    # frame, start_point[:2], (start_point[:2] + vec[:2]), *args, **kwargs
-    # )
+    def draw_vector(self, frame, landmark_array, start, vec, *args, **kwargs):
+        start_point = self.get_point(landmark_array, start)
+        return draw_arrow_on_image(
+            frame, start_point[:2], (start_point[:2] + vec[:2]), *args, **kwargs
+        )
 
     def stop_thread(self):
         self.stop_flag = True
