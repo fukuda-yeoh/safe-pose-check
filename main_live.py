@@ -1,5 +1,6 @@
 import os
 import time
+import threading
 
 # https://github.com/opencv/opencv/issues/17687
 os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
@@ -7,6 +8,13 @@ os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 import cv2 as cv
 import numpy as np
 from threading import Thread
+
+# playsoundライブラリをインポート
+try:
+    from playsound import playsound
+except ImportError:
+    print("警告: playsoundライブラリが見つかりません。'pip install playsound' でインストールしてください。")
+    playsound = None
 
 from components import (
     CameraThread,
@@ -55,19 +63,26 @@ recorder = RecordWorker(save_dir, save_dir, landmark_labels, "frame")
 record_count = 1
 is_recording = False
 
-# --- display_check_area_points の定義 ---
+# --- エリア定義 ---
+roi_points = [(0.30, 0.53), (0.30, 0.70), (0.70, 0.70), (0.70, 0.53)]
 display_check_area_points = [
-    (0, 0.70),  # 左上 (クリアエリアの左上と同じ)
-    (0, 0.85),  # 左下
-    (1, 0.85),  # 右下
-    (1, 0.70),  # 右上 (クリアエリアの右上と同じ)
+    (0.30, 0.70),  # 左上
+    (0.30, 0.85),  # 左下
+    (0.70, 0.85),  # 右下
+    (0.70, 0.70),  # 右上
 ]
-# ---------------------------------------------
+clear_roi_points = [
+    (0.30, 0.85),  # 左上
+    (0.30, 1.00),  # 左下
+    (0.70, 1.00),  # 右下
+    (0.70, 0.85),  # 右上
+]
+# ------------------
 
 event_detector = EventDetector(
     landmark_labels,
-    roi_points=[(0, 0.53), (0, 0.70), (1, 0.70), (1, 0.53)],
-    clear_roi_points=[(0.30, 0.85), (0.30, 1), (0.70, 1), (0.70, 0.85)],
+    roi_points=roi_points,
+    clear_roi_points=clear_roi_points,
     display_check_area_points=display_check_area_points,
 )
 detector_thread = Thread(
@@ -109,6 +124,34 @@ _result_img_display_width = 300
 _result_img_display_height = 300
 # ----------------------------
 
+# --- 音声関連の変数 ---
+buzzer_sound_path = str(project_root() / "buzzer.wav")
+ok_sound_path = str(project_root() / "OK.mp3")
+detect_sound_path = str(project_root() / "detect.mp3")
+
+_buzzer_played_for_current_ng = False
+_ok_played_for_current_ok = False
+# 各判定項目ごとの再生フラグ
+_detect_played_for_look_left = False
+_detect_played_for_look_right = False
+_detect_played_for_point_left = False
+_detect_played_for_point_right = False
+
+
+def play_sound_async(sound_file_path):
+    """指定された音源ファイルを非同期で再生する関数"""
+    if playsound and os.path.exists(sound_file_path):
+        try:
+            playsound(sound_file_path)
+        except Exception as e:
+            print(f"音源ファイル '{sound_file_path}' の再生中にエラーが発生しました: {e}")
+    else:
+        print(f"音源ファイル '{sound_file_path}' が見つからないか、playsoundが利用できません。")
+
+
+# ----------------------------
+
+
 while True:
     (
         frame_timestamp_ms,
@@ -138,17 +181,28 @@ while True:
     # 人物の枠と薄暗い効果の設定ロジック
     if event_detector.state == EventState.ENTERED_ROI:
         display_frame.set_person_detection_info(person_bbox_coords, dim_mask_needed)
+
+        # 判定エリアに初めて侵入したフレームで各detect音再生フラグをリセット
+        # これにより、新しい判定セッションで各項目が再度検出されたときに音が鳴る
+        # _previous_state が ENTERED_ROI でない場合が「初めて侵入した」瞬間
+        if event_detector._previous_state != EventState.ENTERED_ROI:
+            _detect_played_for_look_left = False
+            _detect_played_for_look_right = False
+            _detect_played_for_point_left = False
+            _detect_played_for_point_right = False
+
     else:
         display_frame.set_person_detection_info(None, False)
 
     # カウント値の表示設定
     display_frame.set_counts(confirmed_count, entered_count)
 
-    # --- テキストフィードバックの表示ロジック ---
+    # --- テキストフィードバックの表示とdetect.mp3再生ロジック ---
     cam_w, cam_h = (original_w, original_h) if final_frame is not None else (640, 480)
 
     # Look Left
-    if events.get("Look Left", {}).get("detected", False):
+    is_look_left_detected = events.get("Look Left", {}).get("detected", False)
+    if is_look_left_detected:
         if _fixed_look_left_pos is None:
             display_pos = events.get("Look Left", {}).get("display_pos")
             if display_pos:
@@ -158,13 +212,20 @@ while True:
 
         if _fixed_look_left_pos is not None:
             display_frame.set_text_feedback("Look Left", _fixed_look_left_pos)
+            if not _detect_played_for_look_left:
+                threading.Thread(
+                    target=play_sound_async, args=(detect_sound_path,)
+                ).start()
+                _detect_played_for_look_left = True
         else:
             display_frame.set_text_feedback("Look Left", None)
     else:
         display_frame.set_text_feedback("Look Left", None)
+        _detect_played_for_look_left = False  # 検出されなくなったらフラグをリセット
 
     # Look Right
-    if events.get("Look Right", {}).get("detected", False):
+    is_look_right_detected = events.get("Look Right", {}).get("detected", False)
+    if is_look_right_detected:
         if _fixed_look_right_pos is None:
             display_pos = events.get("Look Right", {}).get("display_pos")
             if display_pos:
@@ -174,13 +235,20 @@ while True:
 
         if _fixed_look_right_pos is not None:
             display_frame.set_text_feedback("Look Right", _fixed_look_right_pos)
+            if not _detect_played_for_look_right:
+                threading.Thread(
+                    target=play_sound_async, args=(detect_sound_path,)
+                ).start()
+                _detect_played_for_look_right = True
         else:
             display_frame.set_text_feedback("Look Right", None)
     else:
         display_frame.set_text_feedback("Look Right", None)
+        _detect_played_for_look_right = False
 
     # Point Left
-    if events.get("Point Left", {}).get("detected", False):
+    is_point_left_detected = events.get("Point Left", {}).get("detected", False)
+    if is_point_left_detected:
         if _fixed_point_left_pos is None:
             display_pos = events.get("Point Left", {}).get("display_pos")
             if display_pos:
@@ -190,13 +258,20 @@ while True:
 
         if _fixed_point_left_pos is not None:
             display_frame.set_text_feedback("Point Left", _fixed_point_left_pos)
+            if not _detect_played_for_point_left:
+                threading.Thread(
+                    target=play_sound_async, args=(detect_sound_path,)
+                ).start()
+                _detect_played_for_point_left = True
         else:
             display_frame.set_text_feedback("Point Left", None)
     else:
         display_frame.set_text_feedback("Point Left", None)
+        _detect_played_for_point_left = False
 
     # Point Right
-    if events.get("Point Right", {}).get("detected", False):
+    is_point_right_detected = events.get("Point Right", {}).get("detected", False)
+    if is_point_right_detected:
         if _fixed_point_right_pos is None:
             display_pos = events.get("Point Right", {}).get("display_pos")
             if display_pos:
@@ -206,16 +281,21 @@ while True:
 
         if _fixed_point_right_pos is not None:
             display_frame.set_text_feedback("Point Right", _fixed_point_right_pos)
+            if not _detect_played_for_point_right:
+                threading.Thread(
+                    target=play_sound_async, args=(detect_sound_path,)
+                ).start()
+                _detect_played_for_point_right = True
         else:
             display_frame.set_text_feedback("Point Right", None)
     else:
         display_frame.set_text_feedback("Point Right", None)
+        _detect_played_for_point_right = False
     # ------------------------------------------
 
     # --- 判定結果画像表示ロジック ---
     # 判定表示エリアに侵入した場合
     if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
-        # OK/NGどちらを表示するか
         if last_session_all_items_confirmed:  # OKの条件
             display_frame.set_result_image(
                 _ok_img,
@@ -226,6 +306,11 @@ while True:
                     _result_img_display_height,
                 ),
             )
+            # OK画像表示と同時にOK音を鳴らす (一度だけ)
+            if not _ok_played_for_current_ok:
+                threading.Thread(target=play_sound_async, args=(ok_sound_path,)).start()
+                _ok_played_for_current_ok = True
+            _buzzer_played_for_current_ng = False  # NGブザーフラグをリセット
         else:  # NGの条件
             display_frame.set_result_image(
                 _ng_img,
@@ -236,9 +321,18 @@ while True:
                     _result_img_display_height,
                 ),
             )
+            # NG画像表示と同時にブザーを鳴らす (一度だけ)
+            if not _buzzer_played_for_current_ng:
+                threading.Thread(
+                    target=play_sound_async, args=(buzzer_sound_path,)
+                ).start()
+                _buzzer_played_for_current_ng = True
+            _ok_played_for_current_ok = False  # OK音再生フラグをリセット
     else:
         # 判定表示エリアから出たら画像をクリア
         display_frame.set_result_image(None)
+        _buzzer_played_for_current_ng = False  # 判定表示エリアを出たらブザーフラグをリセット
+        _ok_played_for_current_ok = False  # 判定表示エリアを出たらOK音再生フラグをリセット
 
     # --------------------------------------------------------------------------
 
@@ -259,17 +353,21 @@ while True:
         # event_detectorの内部状態をリセット
         event_detector.reset()
 
-        # --------------------------------------------------------------------------
+        _buzzer_played_for_current_ng = False  # リセットエリアに入ったらブザーフラグをリセット
+        _ok_played_for_current_ok = False  # リセットエリアに入ったらOK音再生フラグをリセット
+
+        # 各判定項目ごとの再生フラグもリセット
+        _detect_played_for_look_left = False
+        _detect_played_for_look_right = False
+        _detect_played_for_point_left = False
+        _detect_played_for_point_right = False
+
+    # --------------------------------------------------------------------------
 
     display_frame.update_display()
 
     if is_recording:
-        recorder.record_data(
-            frame_timestamp_ms,
-            landmark_array,
-            None,
-            params,  # landmark_array と params は event_detector から来る
-        )
+        recorder.record_data(frame_timestamp_ms, landmark_array, None, params)
 
     if display_frame.display_frame is not None:
         cv.imshow(f"Video", display_frame.display_frame)
