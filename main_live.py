@@ -55,10 +55,20 @@ recorder = RecordWorker(save_dir, save_dir, landmark_labels, "frame")
 record_count = 1
 is_recording = False
 
+# --- display_check_area_points の定義 ---
+display_check_area_points = [
+    (0, 0.70),  # 左上 (クリアエリアの左上と同じ)
+    (0, 0.85),  # 左下
+    (1, 0.85),  # 右下
+    (1, 0.70),  # 右上 (クリアエリアの右上と同じ)
+]
+# ---------------------------------------------
+
 event_detector = EventDetector(
     landmark_labels,
-    roi_points=[(0.30, 0.53), (0.30, 0.70), (0.70, 0.70), (0.70, 0.53)],
-    clear_roi_points=[(0.30, 0.70), (0.30, 1), (0.70, 1), (0.70, 0.70)],
+    roi_points=[(0, 0.53), (0, 0.70), (1, 0.70), (1, 0.53)],
+    clear_roi_points=[(0.30, 0.85), (0.30, 1), (0.70, 1), (0.70, 0.85)],
+    display_check_area_points=display_check_area_points,
 )
 detector_thread = Thread(
     target=event_detector.run_in_thread, args=(recognition_thread.out_queue,)
@@ -72,23 +82,32 @@ camera_thread.start()
 cv.namedWindow("Video", cv.WINDOW_NORMAL)
 cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
 
-# --- 画像の読み込みは不要になりました ---
-# right_check_img_path = project_root() / "Rightcheck.png"
-# left_check_img_path = project_root() / "Leftcheck.png"
-# right_check_img = cv.imread(str(right_check_img_path), cv.IMREAD_UNCHANGED)
-# left_check_img = cv.imread(str(left_check_img_path), cv.IMREAD_UNCHANGED)
-# if left_check_img is None:
-#     print(f"警告: {left_check_img_path} が見つからないか読み込めません。")
-# if right_check_img is None:
-#     print(f"警告: {right_check_img_path} が見つからないか読み込めません。")
-# ------------------------------------
-
 # --- 固定表示位置を保持する変数 (テキスト用) ---
-_fixed_look_left_pos = None  # (x, y) ピクセル座標
+_fixed_look_left_pos = None
 _fixed_look_right_pos = None
 _fixed_point_left_pos = None
 _fixed_point_right_pos = None
 # ------------------------------
+
+# --- 判定結果画像関連の変数 ---
+_ok_img = None
+_ng_img = None
+
+# OK/NG画像を読み込む
+ok_img_path = project_root() / "OK.png"
+ng_img_path = project_root() / "NG.png"
+_ok_img = cv.imread(str(ok_img_path), cv.IMREAD_UNCHANGED)
+_ng_img = cv.imread(str(ng_img_path), cv.IMREAD_UNCHANGED)
+
+if _ok_img is None:
+    print(f"警告: {ok_img_path} が見つからないか読み込めません。")
+if _ng_img is None:
+    print(f"警告: {ng_img_path} が見つからないか読み込めません。")
+
+# 判定結果画像の表示サイズ
+_result_img_display_width = 300
+_result_img_display_height = 300
+# ----------------------------
 
 while True:
     (
@@ -101,6 +120,7 @@ while True:
         dim_mask_needed,
         confirmed_count,
         entered_count,
+        last_session_all_items_confirmed,  # event_detections.pyから取得
     ) = event_detector.out_queue.get()
 
     if final_frame is not None:
@@ -132,8 +152,6 @@ while True:
         if _fixed_look_left_pos is None:
             display_pos = events.get("Look Left", {}).get("display_pos")
             if display_pos:
-                # 鼻のランドマーク（display_pos）のピクセル座標をそのまま渡す
-                # display_frame側でテキストの幅と高さを考慮して位置を調整
                 text_x = int(display_pos[0] * cam_w)
                 text_y = int(display_pos[1] * cam_h)
                 _fixed_look_left_pos = (text_x, text_y)
@@ -194,24 +212,63 @@ while True:
         display_frame.set_text_feedback("Point Right", None)
     # ------------------------------------------
 
+    # --- 判定結果画像表示ロジック ---
+    # 判定表示エリアに侵入した場合
+    if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
+        # OK/NGどちらを表示するか
+        if last_session_all_items_confirmed:  # OKの条件
+            display_frame.set_result_image(
+                _ok_img,
+                (
+                    (cam_w - _result_img_display_width) // 2,  # 中央揃えX
+                    (cam_h - _result_img_display_height) // 2,  # 中央揃えY
+                    _result_img_display_width,
+                    _result_img_display_height,
+                ),
+            )
+        else:  # NGの条件
+            display_frame.set_result_image(
+                _ng_img,
+                (
+                    (cam_w - _result_img_display_width) // 2,  # 中央揃えX
+                    (cam_h - _result_img_display_height) // 2,  # 中央揃えY
+                    _result_img_display_width,
+                    _result_img_display_height,
+                ),
+            )
+    else:
+        # 判定表示エリアから出たら画像をクリア
+        display_frame.set_result_image(None)
+
+    # --------------------------------------------------------------------------
+
     # --- リセットエリアに侵入した場合の処理 ---
     if event_detector.state == EventState.EXITED_ROI:
-        event_detector.reset()
-        display_frame.set_person_detection_info(None, False)
-        display_frame.clear_text_feedbacks()
+        # main_live.pyで表示のリセットはここで行う
+        display_frame.set_person_detection_info(None, False)  # 人物強調表示クリア
+        display_frame.clear_text_feedbacks()  # テキストフィードバッククリア
+        display_frame.set_result_image(None)  # 判定結果画像クリア
+        display_frame.reset_traffic_lights()  # 信号機リセット
 
         # 固定位置をリセット
         _fixed_look_left_pos = None
         _fixed_look_right_pos = None
         _fixed_point_left_pos = None
         _fixed_point_right_pos = None
-    # --------------------------------------------------------------------------
+
+        # event_detectorの内部状態をリセット
+        event_detector.reset()
+
+        # --------------------------------------------------------------------------
 
     display_frame.update_display()
 
     if is_recording:
         recorder.record_data(
-            frame_timestamp_ms, landmark_array, None, final_frame, params
+            frame_timestamp_ms,
+            landmark_array,
+            None,
+            params,  # landmark_array と params は event_detector から来る
         )
 
     if display_frame.display_frame is not None:

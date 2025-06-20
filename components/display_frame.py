@@ -32,6 +32,10 @@ class DisplayFrame:
             "Point Right": ["Point Right", "OK", None],
         }
 
+        # 判定結果画像用のプロパティを追加
+        self.result_img = None
+        self.result_img_pos = (0, 0, 0, 0)  # 表示位置とサイズ (x, y, w, h)
+
     def set_dynamic_img(self, key, frame, pos_params=None):
         if key in self.dynamic_frames:
             self.dynamic_frames[key][0] = frame
@@ -49,6 +53,7 @@ class DisplayFrame:
         self.person_bbox = None
         self.dim_mask_needed = False
         self.clear_text_feedbacks()
+        self.result_img = None  # 判定結果画像もクリア
 
     def set_traffic_light_state(self, event_name, is_detected):
         if event_name in self.traffic_light_states:
@@ -67,18 +72,22 @@ class DisplayFrame:
         self.entered_count = entered
 
     def set_text_feedback(self, event_name: str, display_pos_pixels: tuple = None):
-        """
-        指定されたイベントのテキストフィードバックを設定します。
-        :param event_name: 判定項目名 (例: "Look Left")
-        :param display_pos_pixels: (x, y) 形式のピクセル座標 (Noneでクリア)
-        """
         if event_name in self.text_feedbacks:
             self.text_feedbacks[event_name][2] = display_pos_pixels
 
     def clear_text_feedbacks(self):
-        """全てのテキストフィードバックをクリアします。"""
         for key in self.text_feedbacks:
             self.text_feedbacks[key][2] = None
+
+    def set_result_image(self, image_data: np.ndarray = None, pos_params: tuple = None):
+        """
+        判定結果画像を設定します。
+        :param image_data: 表示する画像データ (Noneでクリア)
+        :param pos_params: (x, y, w, h) のタプルで、画像の表示位置とサイズ
+        """
+        self.result_img = image_data
+        if pos_params:
+            self.result_img_pos = pos_params
 
     def update_display(self):
         camera_frame_data = self.dynamic_frames.get("Camera")
@@ -94,6 +103,10 @@ class DisplayFrame:
             if self.person_bbox:
                 self._draw_person_bbox(self.display_frame, self.person_bbox)
 
+            # 判定結果画像の貼り付け
+            if self.result_img is not None:
+                self._paste(self.display_frame, self.result_img, *self.result_img_pos)
+
             # テキストフィードバックの描画
             for event_name, (
                 text_line1,
@@ -107,7 +120,6 @@ class DisplayFrame:
                     text_color = (255, 255, 255)  # 白
                     background_color = (0, 0, 0)  # 黒
 
-                    # 各行のサイズを取得
                     (w1, h1), b1 = cv.getTextSize(
                         text_line1, font, font_scale, font_thickness
                     )
@@ -115,12 +127,10 @@ class DisplayFrame:
                         text_line2, font, font_scale, font_thickness
                     )
 
-                    # テキスト全体の幅と高さを計算 (パディングを含む)
-                    line_spacing = 5  # 行間のピクセル数
-                    padding_h = 5  # 上下のパディング
-                    padding_w = 5  # 左右のパディング
+                    line_spacing = 5
+                    padding_h = 5
+                    padding_w = 5
 
-                    # 2行分の高さ + 行間のスペース + 各行のベースラインの合計 + 上下のパディング
                     total_text_h_content = h1 + h2 + line_spacing
                     total_text_h_with_padding = (
                         total_text_h_content + 2 * padding_h + b1 + b2
@@ -129,28 +139,18 @@ class DisplayFrame:
                     max_text_w = max(w1, w2)
                     total_text_w_with_padding = max_text_w + 2 * padding_w
 
-                    # ランドマーク位置はpos (x, y)
-                    # Look Left / Point Left は左下座標に合わせる
-                    # Look Right / Point Right は右下座標に合わせる
-
-                    # 背景の左上隅のX座標を計算
                     if "Left" in event_name:
                         bg_x1 = pos[0] - padding_w
                     elif "Right" in event_name:
                         bg_x1 = pos[0] - total_text_w_with_padding + padding_w
-                    else:  # Fallback
+                    else:
                         bg_x1 = pos[0] - padding_w
 
-                    # 背景の左上隅のY座標を計算
                     bg_y1 = pos[1] - total_text_h_with_padding
 
-                    # 背景の右下隅のX, Y座標を計算
                     bg_x2 = bg_x1 + total_text_w_with_padding
                     bg_y2 = bg_y1 + total_text_h_with_padding
 
-                    # テキストを背景内で中央揃えに描画
-                    # 最初の行のY座標 (背景の上端 + パディング_Y + (行の高さ / 2)) + (全体のコンテンツ高さ - 行の高さ) / 2
-                    # 修正: text1_y の計算で、全体の高さに対する位置を考慮する
                     text1_y = (
                         bg_y1
                         + padding_h
@@ -160,11 +160,9 @@ class DisplayFrame:
                     )
                     text2_y = text1_y + h2 + b2 + line_spacing
 
-                    # 各行のX座標は背景内で中央揃え
                     text1_x = bg_x1 + (total_text_w_with_padding - w1) // 2
                     text2_x = bg_x1 + (total_text_w_with_padding - w2) // 2
 
-                    # 背景の矩形を描画
                     cv.rectangle(
                         self.display_frame,
                         (bg_x1, bg_y1),
@@ -173,7 +171,6 @@ class DisplayFrame:
                         -1,
                     )
 
-                    # テキストを描画
                     cv.putText(
                         self.display_frame,
                         text_line1,
@@ -406,11 +403,12 @@ if __name__ == "__main__":
 
     # テキストフィードバックのテスト
     cam_w, cam_h = 640, 480
-    test_nose_pos = (int(0.5 * cam_w), int(0.3 * cam_h))  # 鼻のテスト座標
-    test_wrist_pos = (int(0.7 * cam_w), int(0.6 * cam_h))  # 手首のテスト座標
+    # 仮のランドマーク座標 (ピクセル)
+    test_ll_pos = (200, 150)  # Look Left の鼻の位置の例
+    test_pr_pos = (450, 300)  # Point Right の右手首の位置の例
 
-    display.set_text_feedback("Look Left", test_nose_pos)
-    display.set_text_feedback("Point Right", test_wrist_pos)
+    display.set_text_feedback("Look Left", test_ll_pos)
+    display.set_text_feedback("Point Right", test_pr_pos)
 
     display.update_display()
     if display.display_frame is not None:
