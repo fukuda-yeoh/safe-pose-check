@@ -26,12 +26,10 @@ def get_pos_array(landmark_array, labels, landmark_name):
     return landmark_array[i, :]
 
 
-# landmarks_to_array 関数の修正
-def landmarks_to_array(landmark_list):  # 引数名をより分かりやすく変更 (body引数を削除)
+def landmarks_to_array(landmark_list):
     """
     NormalizedLandmarkオブジェクトのリストをNumPy配列に変換します。
     """
-    # landmark_list が空の場合のハンドリングを追加
     if not landmark_list:
         return np.zeros(shape=(0, 5), dtype=float)
 
@@ -48,24 +46,13 @@ def landmarks_to_array(landmark_list):  # 引数名をより分かりやすく�
 def draw_landmarks_on_image(rgb_image, pose_landmarks_list):
     annotated_image = np.copy(rgb_image)
 
-    # Loop through the detected poses to visualize.
-    # pose_landmarks_list は既に単一人物のランドマークリストであることを想定
-    # draw_landmarks_on_image(annotated_image, person_pose_landmarks) の呼び出しを想定
-    # そのため、idx を使うループは不要になるが、互換性のために残すか、調整する
-    # しかし、現在の呼び出し元 (event_detections.py) が `person_pose_landmarks` を直接渡すので、
-    # ここでの `for idx in range(len(pose_landmarks_list)):` は、`len(person_pose_landmarks)` になってしまい、
-    # その中の `pose_landmarks = pose_landmarks_list[idx]` で `NormalizedLandmark` が取り出されるため、
-    # `pose_landmarks_proto` の部分でエラーになる。
+    pose_landmarks = pose_landmarks_list
 
-    # 修正: pose_landmarks_list が単一のランドマークリストであると仮定して処理
-    pose_landmarks = pose_landmarks_list  # ここがポイント
-
-    # Draw the pose landmarks.
     pose_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
     pose_landmarks_proto.landmark.extend(
         [
             landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z)
-            for landmark in pose_landmarks  # ここも変更
+            for landmark in pose_landmarks
         ]
     )
     solutions.drawing_utils.draw_landmarks(
@@ -94,7 +81,6 @@ def draw_roi_on_image(image, roi_points, color=(0, 255, 0), thickness=2):
     annotated_image = np.copy(image)
     height, width, _ = image.shape
     roi_points_int = [(int(x * width), int(y * height)) for (x, y) in roi_points]
-    # ポリゴンとして描画する
     cv.polylines(
         annotated_image,
         [np.array(roi_points_int)],
@@ -111,7 +97,6 @@ def draw_clear_roi_on_image(image, clear_roi_points, color=(0, 0, 255), thicknes
     clear_roi_points_int = [
         (int(x * width), int(y * height)) for (x, y) in clear_roi_points
     ]
-    # ポリゴンとして描画する
     cv.polylines(
         annotated_image,
         [np.array(clear_roi_points_int)],

@@ -287,7 +287,7 @@ class DisplayFrame:
         cv.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
     @staticmethod
-    def _apply_dim_effect(frame, bbox, dim_factor=0.8):
+    def _apply_dim_effect(frame, bbox, dim_factor=0.5):
         overlay = frame.copy()
         output = frame.copy()
 

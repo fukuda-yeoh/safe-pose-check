@@ -9,8 +9,8 @@ from funcs.calc_score import calculate_score_l, calculate_score_r
 from funcs.landmark_funcs import (
     get_pos_array,
     draw_arrow_on_image,
-    draw_roi_on_image,
-    draw_clear_roi_on_image,
+    # draw_roi_on_image, # コメントアウト
+    # draw_clear_roi_on_image, # コメントアウト
     landmarks_to_array,
 )
 
@@ -71,17 +71,10 @@ class EventDetector:
         self._last_session_all_items_confirmed = False
 
     def reset(self):
-        # このresetは、イベント検出状態とスコアをリセットする。
-        # カウント（entered_count, confirmed_count）はリセットしない。
-        # _all_items_confirmed_in_current_sessionはrun()で管理される。
-        # _last_session_all_items_confirmedもrun()で管理される。
         self.events = self.default_event()
         self.scores = {key: 0 for key in self.scores}
         self._confirmed_for_current_entry = False
-        self._all_items_confirmed_in_current_session = False  # ここで現在のセッションフラグをリセット
-
-        # 注意：main_live.pyでこのメソッドを呼ぶ代わりに、
-        # 画面表示のリセットを個別に制御するように変更する
+        self._all_items_confirmed_in_current_session = False
 
     @staticmethod
     def default_event():
@@ -179,10 +172,6 @@ class EventDetector:
 
                 person_bbox_coords = (x1, y1, x2, y2)
 
-                # run() メソッドを呼び出す前に _all_items_confirmed_in_current_session の状態を保存
-                # これはrun()の実行後に_all_items_confirmed_in_current_sessionが更新されるため
-                # _last_session_all_items_confirmed = self._all_items_confirmed_in_current_session # これはrun()内で管理
-
                 params, frame_with_roi, events = self.run(landmark_array, frame)
 
                 self.update_scores(params)
@@ -191,29 +180,36 @@ class EventDetector:
 
                 dim_mask_needed = True
             else:
-                frame = self.draw_roi(
-                    frame,
-                )
-                frame = self.draw_clear_roi(frame)
-                frame = self.draw_display_check_area(frame)
+                # これらのエリア描画はrun()内でフレームに適用されるため、ここで呼び出す必要はない
+                # frame = self.draw_roi(frame) # コメントアウト
+                # frame = self.draw_clear_roi(frame) # コメントアウト
+                # frame = self.draw_display_check_area(frame) # コメントアウト
 
                 landmark_array = None
                 params = None
                 events = {}
                 dim_mask_needed = False
 
-                # 人物がいない場合、セッションの全確認フラグを記録し、リセット
                 self._last_session_all_items_confirmed = (
                     self._all_items_confirmed_in_current_session
                 )
-                self._all_items_confirmed_in_current_session = False  # 現在のセッションフラグをリセット
+                self._all_items_confirmed_in_current_session = False
 
                 self.state = EventState.NO_PERSON
                 self._previous_state = EventState.NO_PERSON
                 self._confirmed_for_current_entry = False
-                self.reset_events_detected_state()  # 人物がいなくなったらイベント検出状態をリセット
+                self.reset_events_detected_state()
 
-                display_frame_for_output = frame
+                # 人物がいない場合も、エリア枠を描画するために元のフレームを渡す
+                display_frame_for_output = frame.copy()  # copy()で独立したフレームを確保
+                # ただし、run_in_threadのこのelseブロックはMediaPipeで人物が検出されない場合なので、
+                # そのフレームにROIなどを描画するロジックはevent_detections.pyのrun()メソッドが担当。
+                # ここでは単にフレームを渡し、run()の戻り値を受け取るように統一する。
+                # なので、このelseブロック内での直接的な描画は不要。
+
+                # run() を呼び出して、その中でエリア描画が行われるようにする
+                # 人物がいない場合は landmark_array=None で run() を呼び出し
+                _, display_frame_for_output, _ = self.run(None, frame)
 
             self.out_queue.put(
                 (
@@ -235,63 +231,48 @@ class EventDetector:
         in_clear_roi = self.feet_inside_clear_roi(landmark_array)
         in_display_check_area = self.feet_inside_display_check_area(landmark_array)
 
-        self._previous_state = self.state  # 現在の状態を保存
+        self._previous_state = self.state
 
         if in_roi:
             self.state = EventState.ENTERED_ROI
             if self._previous_state != EventState.ENTERED_ROI:
                 self.entered_count += 1
                 self._confirmed_for_current_entry = False
-                self._all_items_confirmed_in_current_session = (
-                    False  # 新しいROIセッション開始時にリセット
-                )
-                # `_last_session_all_items_confirmed` はここでは変更しない（直前のセッション結果はEXITED_ROI/NO_PERSONで確定済み）
+                self._all_items_confirmed_in_current_session = False
         elif in_clear_roi:
-            # リセットエリアにいる場合、現在のROIセッションの確認状況を記録
             self._last_session_all_items_confirmed = (
                 self._all_items_confirmed_in_current_session
             )
-            self._all_items_confirmed_in_current_session = False  # 現在のセッションフラグをリセット
+            self._all_items_confirmed_in_current_session = False
             self.state = EventState.EXITED_ROI
             self._confirmed_for_current_entry = False
-            self.reset_events_detected_state()  # イベント検出状態（信号機）をリセット
+            self.reset_events_detected_state()
         elif in_display_check_area:
-            # 判定表示エリアにいる場合
-            # 前のフレームがENTERED_DISPLAY_CHECK_AREA以外（ROIやクリアエリア、NO_PERSONなど）から遷移してきた場合、
-            # その直前のROIセッションの結果を`_last_session_all_items_confirmed`に確定させる
             if self._previous_state != EventState.ENTERED_DISPLAY_CHECK_AREA:
-                if self._previous_state == EventState.ENTERED_ROI:  # ROIから直接判定表示エリアへ
+                if self._previous_state == EventState.ENTERED_ROI:
                     self._last_session_all_items_confirmed = (
                         self._all_items_confirmed_in_current_session
                     )
-                elif self._previous_state == EventState.EXITED_ROI:  # リセットエリアから判定表示エリアへ
-                    # この場合は_last_session_all_items_confirmedは既にEXITED_ROIで記録されている
+                elif self._previous_state == EventState.EXITED_ROI:
                     pass
-                elif self._previous_state == EventState.NO_PERSON:  # どこでもない状態から判定表示エリアへ
-                    # この場合は_last_session_all_items_confirmedは既にNO_PERSONで記録されている
+                elif self._previous_state == EventState.NO_PERSON:
                     pass
-
-                # 判定表示エリアに侵入したら、現在のROIセッションのフラグはリセットしない（もうROIにはいないため）
-                # `_all_items_confirmed_in_current_session` はそのまま保持（次のROIセッションでリセットされる）
 
             self.state = EventState.ENTERED_DISPLAY_CHECK_AREA
 
-        else:  # どのエリアにもいない場合 (判定表示エリアから出た場合も含む)
-            # どのエリアにもいない状態になったら、現在のROIセッションの状態を確定し、現在のセッションフラグをリセット
-            if self._previous_state != EventState.NO_PERSON:  # 以前がNO_PERSONでなければ結果を確定
+        else:
+            if self._previous_state != EventState.NO_PERSON:
                 self._last_session_all_items_confirmed = (
                     self._all_items_confirmed_in_current_session
                 )
-                self._all_items_confirmed_in_current_session = False  # 現在のセッションフラグをリセット
+                self._all_items_confirmed_in_current_session = False
 
-            # リセットエリアから外に出た場合も結果を確定 (ただし、このケースでは_last_session_all_items_confirmedはもう使わないはず)
             if self._previous_state == EventState.EXITED_ROI:
-                # _last_session_all_items_confirmed は EXIT_ROI で既に確定済み
                 pass
 
             self.state = EventState.NO_PERSON
             self._confirmed_for_current_entry = False
-            self.reset_events_detected_state()  # イベント検出状態（信号機など）をリセット
+            self.reset_events_detected_state()
 
         eye_vec = self.get_vector(landmark_array, "left eye", "right eye")
         down_vec = self.get_vector(landmark_array, "mid eye", "mid mouth")
@@ -325,10 +306,7 @@ class EventDetector:
                     self.confirmed_count += 1
                     self._confirmed_for_current_entry = True
                     self._all_items_confirmed_in_current_session = True
-        # else if self.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
-        #     # 判定表示エリアにいる場合はイベントチェックは行わない（判定エリアでの結果を表示するため）
-        #     pass
-        else:  # ROI外ならイベント状態リセット (信号機を赤に戻す)
+        else:
             self.reset_events_detected_state()
 
         if landmark_array is not None:
@@ -342,9 +320,10 @@ class EventDetector:
                     event["display_pos"] = None
 
         if frame is not None:
-            frame = self.draw_roi(frame)
-            frame = self.draw_clear_roi(frame)
-            frame = self.draw_display_check_area(frame)
+            # エリア描画をコメントアウト
+            # frame = self.draw_roi(frame)
+            # frame = self.draw_clear_roi(frame)
+            # frame = self.draw_display_check_area(frame)
 
             if landmark_array is not None:
                 frame = self.draw_vector(frame, landmark_array, "nose", head_vec)
@@ -355,7 +334,6 @@ class EventDetector:
         return params, frame, self.events
 
     def reset_events_detected_state(self):
-        # このメソッドは、個別のイベント検出状態（信号機、テキスト）をリセットする
         for name in self.events:
             self.events[name]["detected"] = False
             self.events[name]["previous"] = 0

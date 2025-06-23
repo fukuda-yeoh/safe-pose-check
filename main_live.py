@@ -64,18 +64,18 @@ record_count = 1
 is_recording = False
 
 # --- エリア定義 ---
-roi_points = [(0.30, 0.53), (0.30, 0.70), (0.70, 0.70), (0.70, 0.53)]
+roi_points = [(0, 0.53), (0, 0.70), (1, 0.70), (1, 0.53)]
 display_check_area_points = [
-    (0.30, 0.70),  # 左上
-    (0.30, 0.85),  # 左下
-    (0.70, 0.85),  # 右下
-    (0.70, 0.70),  # 右上
+    (0, 0.70),  # 左上
+    (0, 0.85),  # 左下
+    (1, 0.85),  # 右下
+    (1, 0.70),  # 右上
 ]
 clear_roi_points = [
-    (0.30, 0.85),  # 左上
-    (0.30, 1.00),  # 左下
-    (0.70, 1.00),  # 右下
-    (0.70, 0.85),  # 右上
+    (0, 0.85),  # 左上
+    (0, 1.00),  # 左下
+    (1, 1.00),  # 右下
+    (1, 0.85),  # 右上
 ]
 # ------------------
 
@@ -182,10 +182,15 @@ while True:
     if event_detector.state == EventState.ENTERED_ROI:
         display_frame.set_person_detection_info(person_bbox_coords, dim_mask_needed)
 
-        # 判定エリアに初めて侵入したフレームで各detect音再生フラグをリセット
-        # これにより、新しい判定セッションで各項目が再度検出されたときに音が鳴る
-        # _previous_state が ENTERED_ROI でない場合が「初めて侵入した」瞬間
-        if event_detector._previous_state != EventState.ENTERED_ROI:
+        # 新規追加: ENTERED_ROIになったらdetect.mp3の再生フラグをすべてリセット
+        # _previous_state は EventDetectorのインスタンス変数
+        # event_detector.run() メソッドの冒頭で event_detector._previous_state が更新される
+        # そのため、ここでは `event_detector.state` と `event_detector._previous_state` を比較して、
+        # 状態遷移を検知するのが適切
+        if (
+            event_detector.state == EventState.ENTERED_ROI
+            and event_detector._previous_state != EventState.ENTERED_ROI
+        ):  # ROIに新しく侵入した場合
             _detect_played_for_look_left = False
             _detect_played_for_look_right = False
             _detect_played_for_point_left = False
@@ -217,11 +222,11 @@ while True:
                     target=play_sound_async, args=(detect_sound_path,)
                 ).start()
                 _detect_played_for_look_left = True
-        else:
-            display_frame.set_text_feedback("Look Left", None)
-    else:
+        # else: fixed_posがNoneでテキスト表示できていない場合
+        # do nothing with flag here, let the fixed_pos be set first
+    else:  # イベントが検出されなくなった場合
         display_frame.set_text_feedback("Look Left", None)
-        _detect_played_for_look_left = False  # 検出されなくなったらフラグをリセット
+        _detect_played_for_look_left = False
 
     # Look Right
     is_look_right_detected = events.get("Look Right", {}).get("detected", False)
@@ -240,8 +245,8 @@ while True:
                     target=play_sound_async, args=(detect_sound_path,)
                 ).start()
                 _detect_played_for_look_right = True
-        else:
-            display_frame.set_text_feedback("Look Right", None)
+        # else:
+        # do nothing with flag here
     else:
         display_frame.set_text_feedback("Look Right", None)
         _detect_played_for_look_right = False
@@ -263,8 +268,8 @@ while True:
                     target=play_sound_async, args=(detect_sound_path,)
                 ).start()
                 _detect_played_for_point_left = True
-        else:
-            display_frame.set_text_feedback("Point Left", None)
+        # else:
+        # do nothing with flag here
     else:
         display_frame.set_text_feedback("Point Left", None)
         _detect_played_for_point_left = False
@@ -286,8 +291,8 @@ while True:
                     target=play_sound_async, args=(detect_sound_path,)
                 ).start()
                 _detect_played_for_point_right = True
-        else:
-            display_frame.set_text_feedback("Point Right", None)
+        # else:
+        # do nothing with flag here
     else:
         display_frame.set_text_feedback("Point Right", None)
         _detect_played_for_point_right = False
