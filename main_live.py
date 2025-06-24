@@ -50,7 +50,7 @@ dist_coeffs = np.array(
 )
 
 # カメラを開く
-model_path = project_root() / "models" / "pose_landmarker_lite.task"
+model_path = project_root() / "models" / "pose_landmarker_full.task"
 landmarks_def_path = project_root() / "models" / "landmarks.txt"
 save_dir = project_root() / "record"
 save_dir.mkdir(exist_ok=True)
@@ -95,13 +95,14 @@ detector_thread.start()
 camera_thread.start()
 
 cv.namedWindow("Video", cv.WINDOW_NORMAL)
-cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
+# cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
 
 # --- 固定表示位置を保持する変数 (テキスト用) ---
-_fixed_look_left_pos = None
-_fixed_look_right_pos = None
-_fixed_point_left_pos = None
-_fixed_point_right_pos = None
+# これらの座標は、ウィンドウのサイズに合わせて調整が必要かもしれません
+_fixed_look_left_pos = (375, 150)  # 左上の判定用テキスト位置
+_fixed_look_right_pos = (120, 150)  # 右上の判定用テキスト位置
+_fixed_point_left_pos = (375, 250)  # 左下の判定用テキスト位置
+_fixed_point_right_pos = (120, 250)  # 右下の判定用テキスト位置
 # ------------------------------
 
 # --- 判定結果画像関連の変数 ---
@@ -175,8 +176,10 @@ while True:
         display_frame.clear_dynamic_img("Camera")
 
     # 信号機の状態更新ロジック
-    for name, event_data in events.items():
-        display_frame.set_traffic_light_state(name, event_data["detected"])
+    # 判定表示エリアにいる間は信号機を更新しない
+    if event_detector.state != EventState.ENTERED_DISPLAY_CHECK_AREA:
+        for name, event_data in events.items():
+            display_frame.set_traffic_light_state(name, event_data["detected"])
 
     # 人物の枠と薄暗い効果の設定ロジック
     if event_detector.state == EventState.ENTERED_ROI:
@@ -349,12 +352,6 @@ while True:
         display_frame.set_result_image(None)  # 判定結果画像クリア
         display_frame.reset_traffic_lights()  # 信号機リセット
 
-        # 固定位置をリセット
-        _fixed_look_left_pos = None
-        _fixed_look_right_pos = None
-        _fixed_point_left_pos = None
-        _fixed_point_right_pos = None
-
         # event_detectorの内部状態をリセット
         event_detector.reset()
 
@@ -402,5 +399,14 @@ while True:
             is_recording = False
             record_count += 1
             print("録画を終了しました")
+    elif key == ord("f"):  # 'f' キーが押された場合の処理を追加
+        # 現在のウィンドウプロパティを取得し、フルスクリーン状態を切り替える
+        current_prop = cv.getWindowProperty("Video", cv.WND_PROP_FULLSCREEN)
+        if current_prop == cv.WINDOW_FULLSCREEN:
+            # フルスクリーンならノーマルに戻す
+            cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_NORMAL)
+        else:
+            # ノーマルならフルスクリーンにする
+            cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
 
 cv.destroyAllWindows()

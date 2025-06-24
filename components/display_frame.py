@@ -23,7 +23,7 @@ class DisplayFrame:
         self.dim_mask_needed = False
 
         self.confirmed_count = 0
-        self.entered_count = 0
+        self.fail_count = 0  # entered_count を fail_count に変更
 
         self.text_feedbacks = {
             "Look Left": ["Look Left", "OK", None],
@@ -67,9 +67,9 @@ class DisplayFrame:
         self.person_bbox = bbox
         self.dim_mask_needed = dim_mask
 
-    def set_counts(self, confirmed: int, entered: int):
+    def set_counts(self, confirmed: int, fail: int):  # 引数名を変更
         self.confirmed_count = confirmed
-        self.entered_count = entered
+        self.fail_count = fail  # 変数名を変更
 
     def set_text_feedback(self, event_name: str, display_pos_pixels: tuple = None):
         if event_name in self.text_feedbacks:
@@ -196,9 +196,8 @@ class DisplayFrame:
             if self.display_frame is not None:
                 frame_h, frame_w, _ = self.display_frame.shape
 
-                count_text = (
-                    f"Confirmed {self.confirmed_count} / Entered {self.entered_count}"
-                )
+                # テキストを変更
+                count_text = f"Pass {self.confirmed_count} / Fail {self.fail_count}"
                 font = cv.FONT_HERSHEY_SIMPLEX
                 font_scale = 0.8
                 font_thickness = 2
@@ -287,7 +286,7 @@ class DisplayFrame:
         cv.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
 
     @staticmethod
-    def _apply_dim_effect(frame, bbox, dim_factor=0.5):
+    def _apply_dim_effect(frame, bbox, dim_factor=0.2):
         overlay = frame.copy()
         output = frame.copy()
 
@@ -399,7 +398,7 @@ if __name__ == "__main__":
     test_bbox = (100, 100, 500, 400)
     display.set_person_detection_info(test_bbox, True)
 
-    display.set_counts(confirmed=5, entered=12)
+    display.set_counts(confirmed=5, fail=12)  # 引数名を変更
 
     # テキストフィードバックのテスト
     cam_w, cam_h = 640, 480
