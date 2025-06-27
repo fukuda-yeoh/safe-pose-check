@@ -15,7 +15,10 @@ from components import (
     RecordWorker,
     EventDetector,
     EventState,
-    DisplayFrame,play_buzzer_sound, play_ok_sound, play_detect_sound
+    DisplayFrame,
+    play_buzzer_sound,
+    play_ok_sound,
+    play_detect_sound,
 )
 from defs import project_root
 from funcs.landmark_funcs import (
@@ -118,8 +121,6 @@ if _ng_img is None:
 _result_img_display_width = 300
 _result_img_display_height = 300
 # ----------------------------
-
-
 _buzzer_played_for_current_ng = False
 _ok_played_for_current_ok = False
 # 各判定項目ごとの再生フラグ
@@ -127,11 +128,7 @@ _detect_played_for_look_left = False
 _detect_played_for_look_right = False
 _detect_played_for_point_left = False
 _detect_played_for_point_right = False
-
-
-
 # ----------------------------
-
 
 while True:
     (
@@ -171,8 +168,8 @@ while True:
         # そのため、ここでは `event_detector.state` と `event_detector._previous_state` を比較して、
         # 状態遷移を検知するのが適切
         if (
-                event_detector.state == EventState.ENTERED_ROI
-                and event_detector._previous_state != EventState.ENTERED_ROI
+            event_detector.state == EventState.ENTERED_ROI
+            and event_detector._previous_state != EventState.ENTERED_ROI
         ):  # ROIに新しく侵入した場合
             _detect_played_for_look_left = False
             _detect_played_for_look_right = False

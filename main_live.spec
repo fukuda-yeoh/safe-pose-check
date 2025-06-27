@@ -8,7 +8,7 @@ a = Analysis(
     [f"main_live.py"],
     pathex=[],
     binaries=[],
-    datas=[(f"models", f"models"),],
+    datas=[(f"models", f"models"),(f"sound", f"sound")],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -4,9 +4,9 @@ import sounddevice as sd
 from defs import project_root
 from funcs import read_mp3
 
-buzzer_sound = scipy.io.wavfile.read(project_root() / "buzzer.wav")
-ok_sound = read_mp3(str(project_root() / "OK.mp3"))
-detect_sound = read_mp3(str(project_root() / "detect.mp3"))
+buzzer_sound = scipy.io.wavfile.read(project_root() / "sound" / "buzzer.wav")
+ok_sound = read_mp3(str(project_root() / "sound" / "OK.mp3"))
+detect_sound = read_mp3(str(project_root() / "sound" / "detect.mp3"))
 
 
 def play_detect_sound():
