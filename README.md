@@ -5,17 +5,17 @@
 
 2.　仮想環境の作成
 
-uv sync
+```uv sync```
 
 3.　scoopのインストール
 
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser```
 
-Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+```Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression```
 
 4.　ffmpegのインストール
 
-scoop install ffmpeg
+```scoop install ffmpeg```
 
 # システムの実行
-uv run main_live.py
+```uv run main_live.py```
