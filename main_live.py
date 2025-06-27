@@ -1,4 +1,6 @@
 import os
+import time
+import threading
 
 # https://github.com/opencv/opencv/issues/17687
 os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
@@ -6,7 +8,13 @@ os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 import cv2 as cv
 import numpy as np
 from threading import Thread
-from screeninfo import get_monitors  # 再追加
+
+# playsoundライブラリをインポート
+try:
+    from playsound import playsound
+except ImportError:
+    print("警告: playsoundライブラリが見つかりません。'pip install playsound' でインストールしてください。")
+    playsound = None
 
 from components import (
     CameraThread,
@@ -24,21 +32,22 @@ from funcs.landmark_funcs import (
 # カメラ行列と歪み係数
 camera_matrix = np.array(
     [
-        [359.60126359570563, 0.0, 298.67824646996394],
-        [0.0, 361.0578929901831, 250.78626701590608],
+        [635.8283543606941, 0.0, 253.67538054709416],
+        [0.0, 636.5077974749544, 320.7767679600789],
         [0.0, 0.0, 1.0],
     ]
 )
 
 dist_coeffs = np.array(
     [
-        -0.046472287345238956,
-        0.04685134556842647,
-        -0.0653804465562841,
-        0.032106609308392015,
+        -0.013855030664346785,
+        0.036480883659782824,
+        -0.004879021042728567,
+        0.0019079058483680378,
+        -0.21054703261551563,
     ],
     dtype=np.float32,
-)  # 例
+)
 
 # カメラを開く
 model_path = project_root() / "models" / "pose_landmarker_full.task"
@@ -54,10 +63,28 @@ recorder = RecordWorker(save_dir, save_dir, landmark_labels, "frame")
 record_count = 1
 is_recording = False
 
+# --- エリア定義 ---
+roi_points = [(0, 0.645), (0, 0.79), (0.713, 0.633), (0.525, 0.55)]
+display_check_area_points = [
+    (0.15, 0.755),  # 左上
+    (0.23, 0.86),  # 左下
+    (0.79, 0.72),  # 右下
+    (0.65, 0.645),  # 右上
+]
+clear_roi_points = [
+    (0.23, 0.86),  # 左上
+    (0.325, 1.00),  # 左下
+    (1, 1),
+    (1, 0.817),  # 右下
+    (0.79, 0.72),  # 右上
+]
+# ------------------
+
 event_detector = EventDetector(
     landmark_labels,
-    roi_points=[(0.30, 0.53), (0.30, 0.70), (0.70, 0.70), (0.70, 0.53)],
-    clear_roi_points=[(0.30, 0.70), (0.30, 1), (0.70, 1), (0.70, 0.70)],
+    roi_points=roi_points,
+    clear_roi_points=clear_roi_points,
+    display_check_area_points=display_check_area_points,
 )
 detector_thread = Thread(
     target=event_detector.run_in_thread, args=(recognition_thread.out_queue,)
@@ -68,164 +95,282 @@ recognition_thread.start()
 detector_thread.start()
 camera_thread.start()
 
-# --- ディスプレイの自動検出とウィンドウ設定の変更点 ---
-monitors = get_monitors()
-target_monitor = None
-
-if len(monitors) > 1:
-    # 複数モニターがある場合、メインディスプレイ以外の最も広いモニターをサイネージと仮定
-    secondary_monitors = [m for m in monitors if not m.is_primary]
-    if secondary_monitors:
-        target_monitor = max(secondary_monitors, key=lambda m: m.width * m.height)
-    else:
-        # メインディスプレイしか二次モニターがない場合
-        target_monitor = monitors[0]
-else:
-    # モニターが1つしかない場合、それをターゲットとする
-    target_monitor = monitors[0]
-
-# ターゲットモニターの幅と高さを取得
-display_width = target_monitor.width
-display_height = target_monitor.height
-display_x = target_monitor.x
-display_y = target_monitor.y
-
-# OpenCVウィンドウをターゲットモニターに移動し、フルスクリーンに設定
 cv.namedWindow("Video", cv.WINDOW_NORMAL)
-cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
-cv.moveWindow("Video", display_x, display_y)
+# cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
 
-print(
-    f"Displaying on monitor at ({display_x}, {display_y}) with resolution {display_width}x{display_height}"
-)
-# --- 変更点ここまで ---
+# --- 固定表示位置を保持する変数 (テキスト用) ---
+# これらの座標は、ウィンドウのサイズに合わせて調整が必要かもしれません
+_fixed_look_left_pos = (375, 150)  # 左上の判定用テキスト位置
+_fixed_look_right_pos = (120, 150)  # 右上の判定用テキスト位置
+_fixed_point_left_pos = (375, 250)  # 左下の判定用テキスト位置
+_fixed_point_right_pos = (120, 250)  # 右下の判定用テキスト位置
+# ------------------------------
+
+# --- 判定結果画像関連の変数 ---
+_ok_img = None
+_ng_img = None
+
+# OK/NG画像を読み込む
+ok_img_path = project_root() / "OK.png"
+ng_img_path = project_root() / "NG.png"
+_ok_img = cv.imread(str(ok_img_path), cv.IMREAD_UNCHANGED)
+_ng_img = cv.imread(str(ng_img_path), cv.IMREAD_UNCHANGED)
+
+if _ok_img is None:
+    print(f"警告: {ok_img_path} が見つからないか読み込めません。")
+if _ng_img is None:
+    print(f"警告: {ng_img_path} が見つからないか読み込めません。")
+
+# 判定結果画像の表示サイズ
+_result_img_display_width = 300
+_result_img_display_height = 300
+# ----------------------------
+
+# --- 音声関連の変数 ---
+buzzer_sound_path = str(project_root() / "buzzer.wav")
+ok_sound_path = str(project_root() / "OK.mp3")
+detect_sound_path = str(project_root() / "detect.mp3")
+
+_buzzer_played_for_current_ng = False
+_ok_played_for_current_ok = False
+# 各判定項目ごとの再生フラグ
+_detect_played_for_look_left = False
+_detect_played_for_look_right = False
+_detect_played_for_point_left = False
+_detect_played_for_point_right = False
+
+
+def play_sound_async(sound_file_path):
+    """指定された音源ファイルを非同期で再生する関数"""
+    if playsound and os.path.exists(sound_file_path):
+        try:
+            playsound(sound_file_path)
+        except Exception as e:
+            print(f"音源ファイル '{sound_file_path}' の再生中にエラーが発生しました: {e}")
+    else:
+        print(f"音源ファイル '{sound_file_path}' が見つからないか、playsoundが利用できません。")
+
+
+# ----------------------------
 
 
 while True:
     (
         frame_timestamp_ms,
-        final_frame,  # ここにカメラから取得した元のフレームが入ります
+        final_frame,
         landmark_array,
         params,
         events,
+        person_bbox_coords,
+        dim_mask_needed,
+        confirmed_count,
+        entered_count,
+        last_session_all_items_confirmed,  # event_detections.pyから取得
     ) = event_detector.out_queue.get()
 
     if final_frame is not None:
         original_h, original_w, _ = final_frame.shape
-
-        # カメラ映像をターゲットディスプレイの解像度にリサイズ
-        frame_aspect_ratio = original_w / original_h
-        display_aspect_ratio = display_width / display_height
-
-        if frame_aspect_ratio > display_aspect_ratio:
-            # カメラ映像が画面より横長の場合、幅に合わせて調整
-            display_camera_w = display_width
-            display_camera_h = int(display_width / frame_aspect_ratio)
-        else:
-            # カメラ映像が画面より縦長の場合、高さに合わせて調整
-            display_camera_h = display_height
-            display_camera_w = int(display_height * frame_aspect_ratio)
-
-        # 画面中央に表示されるようにオフセットを計算 (Image1/Image2の配置に影響)
-        offset_x = (display_width - display_camera_w) // 2
-        offset_y = (display_height - display_camera_h) // 2
-
         display_frame.set_dynamic_img(
-            "Camera",
-            final_frame,
-            (offset_x, offset_y, display_camera_w, display_camera_h),
+            "Camera", final_frame, (0, 0, original_w, original_h)
         )
     else:
         display_frame.clear_dynamic_img("Camera")
 
-    # 各イベントの検出状態を保持するフラグ
-    look_left_detected = False
-    point_left_detected = False
-    look_right_detected = False
-    point_right_detected = False
+    # 信号機の状態更新ロジック
+    # 判定表示エリアにいる間は信号機を更新しない
+    if event_detector.state != EventState.ENTERED_DISPLAY_CHECK_AREA:
+        for name, event_data in events.items():
+            display_frame.set_traffic_light_state(name, event_data["detected"])
 
-    # イベントの検出状態を更新
-    for name, event in events.items():
-        if event["detected"]:
-            if name == "Look Left":
-                look_left_detected = True
-            elif name == "Point Left":
-                point_left_detected = True
-            elif name == "Look Right":
-                look_right_detected = True
-            elif name == "Point Right":
-                point_right_detected = True
+    # 人物の枠と薄暗い効果の設定ロジック
+    if event_detector.state == EventState.ENTERED_ROI:
+        display_frame.set_person_detection_info(person_bbox_coords, dim_mask_needed)
 
-    # Image1の表示条件: Look Left と Point Left の両方が検出された場合
-    if look_left_detected and point_left_detected:
-        image1_path = project_root() / "Image" / "Leftcheck.png"
-        if image1_path.exists():
-            img1 = cv.imread(str(image1_path))
-            if img1 is not None:
-                display_width_image1 = 200  # 例: 幅 200px
-                display_height_image1 = 600  # 例: 高さ 200px
-                # 画面オフセットを考慮してImage1の表示位置を調整
-                display_frame.set_dynamic_img(
-                    "Image1",
-                    img1,
-                    (
-                        300,
-                        1200,
-                        display_width_image1,
-                        display_height_image1,
-                    ),
-                )
-            else:
-                print(f"Warning: Image1 file not loaded: {image1_path}")
-                display_frame.clear_dynamic_img("Image1")
-        else:
-            print(f"Warning: Image1 file not found: {image1_path}")
-            display_frame.clear_dynamic_img("Image1")
+        # 新規追加: ENTERED_ROIになったらdetect.mp3の再生フラグをすべてリセット
+        # _previous_state は EventDetectorのインスタンス変数
+        # event_detector.run() メソッドの冒頭で event_detector._previous_state が更新される
+        # そのため、ここでは `event_detector.state` と `event_detector._previous_state` を比較して、
+        # 状態遷移を検知するのが適切
+        if (
+            event_detector.state == EventState.ENTERED_ROI
+            and event_detector._previous_state != EventState.ENTERED_ROI
+        ):  # ROIに新しく侵入した場合
+            _detect_played_for_look_left = False
+            _detect_played_for_look_right = False
+            _detect_played_for_point_left = False
+            _detect_played_for_point_right = False
+
     else:
-        display_frame.clear_dynamic_img("Image1")
+        display_frame.set_person_detection_info(None, False)
 
-    # Image2の表示条件: Look Right と Point Right の両方が検出された場合
-    if look_right_detected and point_right_detected:
-        image2_path = project_root() / "Image" / "Rightcheck.png"
-        if image2_path.exists():
-            img2 = cv.imread(str(image2_path))
-            if img2 is not None:
-                if final_frame is not None:
-                    display_width_image2 = 200  # 例: 幅 200px
-                    display_height_image2 = 600  # 例: 高さ 200px
-                    # 画面オフセットとカメラ映像の幅を考慮してImage2の表示位置を調整
-                    image2_x = offset_x + display_camera_w - display_width_image2 - 10
-                    display_frame.set_dynamic_img(
-                        "Image2",
-                        img2,
-                        (
-                            1800,
-                            1200,
-                            display_width_image2,
-                            display_height_image2,
-                        ),
-                    )
-                else:
-                    display_frame.clear_dynamic_img("Image2")
-            else:
-                print(f"Warning: Image2 file not loaded: {image2_path}")
-                display_frame.clear_dynamic_img("Image2")
-        else:
-            print(f"Warning: Image2 file not found: {image2_path}")
-            display_frame.clear_dynamic_img("Image2")
+    # カウント値の表示設定
+    display_frame.set_counts(confirmed_count, entered_count)
+
+    # --- テキストフィードバックの表示とdetect.mp3再生ロジック ---
+    cam_w, cam_h = (original_w, original_h) if final_frame is not None else (640, 480)
+
+    # Look Left
+    is_look_left_detected = events.get("Look Left", {}).get("detected", False)
+    if is_look_left_detected:
+        if _fixed_look_left_pos is None:
+            display_pos = events.get("Look Left", {}).get("display_pos")
+            if display_pos:
+                text_x = int(display_pos[0] * cam_w)
+                text_y = int(display_pos[1] * cam_h)
+                _fixed_look_left_pos = (text_x, text_y)
+
+        if _fixed_look_left_pos is not None:
+            display_frame.set_text_feedback("Look Left", _fixed_look_left_pos)
+            if not _detect_played_for_look_left:
+                threading.Thread(
+                    target=play_sound_async, args=(detect_sound_path,)
+                ).start()
+                _detect_played_for_look_left = True
+        # else: fixed_posがNoneでテキスト表示できていない場合
+        # do nothing with flag here, let the fixed_pos be set first
+    else:  # イベントが検出されなくなった場合
+        display_frame.set_text_feedback("Look Left", None)
+        _detect_played_for_look_left = False
+
+    # Look Right
+    is_look_right_detected = events.get("Look Right", {}).get("detected", False)
+    if is_look_right_detected:
+        if _fixed_look_right_pos is None:
+            display_pos = events.get("Look Right", {}).get("display_pos")
+            if display_pos:
+                text_x = int(display_pos[0] * cam_w)
+                text_y = int(display_pos[1] * cam_h)
+                _fixed_look_right_pos = (text_x, text_y)
+
+        if _fixed_look_right_pos is not None:
+            display_frame.set_text_feedback("Look Right", _fixed_look_right_pos)
+            if not _detect_played_for_look_right:
+                threading.Thread(
+                    target=play_sound_async, args=(detect_sound_path,)
+                ).start()
+                _detect_played_for_look_right = True
+        # else:
+        # do nothing with flag here
     else:
-        display_frame.clear_dynamic_img("Image2")
+        display_frame.set_text_feedback("Look Right", None)
+        _detect_played_for_look_right = False
+
+    # Point Left
+    is_point_left_detected = events.get("Point Left", {}).get("detected", False)
+    if is_point_left_detected:
+        if _fixed_point_left_pos is None:
+            display_pos = events.get("Point Left", {}).get("display_pos")
+            if display_pos:
+                text_x = int(display_pos[0] * cam_w)
+                text_y = int(display_pos[1] * cam_h)
+                _fixed_point_left_pos = (text_x, text_y)
+
+        if _fixed_point_left_pos is not None:
+            display_frame.set_text_feedback("Point Left", _fixed_point_left_pos)
+            if not _detect_played_for_point_left:
+                threading.Thread(
+                    target=play_sound_async, args=(detect_sound_path,)
+                ).start()
+                _detect_played_for_point_left = True
+        # else:
+        # do nothing with flag here
+    else:
+        display_frame.set_text_feedback("Point Left", None)
+        _detect_played_for_point_left = False
+
+    # Point Right
+    is_point_right_detected = events.get("Point Right", {}).get("detected", False)
+    if is_point_right_detected:
+        if _fixed_point_right_pos is None:
+            display_pos = events.get("Point Right", {}).get("display_pos")
+            if display_pos:
+                text_x = int(display_pos[0] * cam_w)
+                text_y = int(display_pos[1] * cam_h)
+                _fixed_point_right_pos = (text_x, text_y)
+
+        if _fixed_point_right_pos is not None:
+            display_frame.set_text_feedback("Point Right", _fixed_point_right_pos)
+            if not _detect_played_for_point_right:
+                threading.Thread(
+                    target=play_sound_async, args=(detect_sound_path,)
+                ).start()
+                _detect_played_for_point_right = True
+        # else:
+        # do nothing with flag here
+    else:
+        display_frame.set_text_feedback("Point Right", None)
+        _detect_played_for_point_right = False
+    # ------------------------------------------
+
+    # --- 判定結果画像表示ロジック ---
+    # 判定表示エリアに侵入した場合
+    if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
+        if last_session_all_items_confirmed:  # OKの条件
+            display_frame.set_result_image(
+                _ok_img,
+                (
+                    (cam_w - _result_img_display_width) // 2,  # 中央揃えX
+                    (cam_h - _result_img_display_height) // 2,  # 中央揃えY
+                    _result_img_display_width,
+                    _result_img_display_height,
+                ),
+            )
+            # OK画像表示と同時にOK音を鳴らす (一度だけ)
+            if not _ok_played_for_current_ok:
+                threading.Thread(target=play_sound_async, args=(ok_sound_path,)).start()
+                _ok_played_for_current_ok = True
+            _buzzer_played_for_current_ng = False  # NGブザーフラグをリセット
+        else:  # NGの条件
+            display_frame.set_result_image(
+                _ng_img,
+                (
+                    (cam_w - _result_img_display_width) // 2,  # 中央揃えX
+                    (cam_h - _result_img_display_height) // 2,  # 中央揃えY
+                    _result_img_display_width,
+                    _result_img_display_height,
+                ),
+            )
+            # NG画像表示と同時にブザーを鳴らす (一度だけ)
+            if not _buzzer_played_for_current_ng:
+                threading.Thread(
+                    target=play_sound_async, args=(buzzer_sound_path,)
+                ).start()
+                _buzzer_played_for_current_ng = True
+            _ok_played_for_current_ok = False  # OK音再生フラグをリセット
+    else:
+        # 判定表示エリアから出たら画像をクリア
+        display_frame.set_result_image(None)
+        _buzzer_played_for_current_ng = False  # 判定表示エリアを出たらブザーフラグをリセット
+        _ok_played_for_current_ok = False  # 判定表示エリアを出たらOK音再生フラグをリセット
+
+    # --------------------------------------------------------------------------
+
+    # --- リセットエリアに侵入した場合の処理 ---
+    if event_detector.state == EventState.EXITED_ROI:
+        # main_live.pyで表示のリセットはここで行う
+        display_frame.set_person_detection_info(None, False)  # 人物強調表示クリア
+        display_frame.clear_text_feedbacks()  # テキストフィードバッククリア
+        display_frame.set_result_image(None)  # 判定結果画像クリア
+        display_frame.reset_traffic_lights()  # 信号機リセット
+
+        # event_detectorの内部状態をリセット
+        event_detector.reset()
+
+        _buzzer_played_for_current_ng = False  # リセットエリアに入ったらブザーフラグをリセット
+        _ok_played_for_current_ok = False  # リセットエリアに入ったらOK音再生フラグをリセット
+
+        # 各判定項目ごとの再生フラグもリセット
+        _detect_played_for_look_left = False
+        _detect_played_for_look_right = False
+        _detect_played_for_point_left = False
+        _detect_played_for_point_right = False
+
+    # --------------------------------------------------------------------------
 
     display_frame.update_display()
 
-    if event_detector.state == EventState.EXITED_ROI:
-        event_detector.reset()
-        display_frame.clear_all_dynamic_img()
-
     if is_recording:
-        recorder.record_data(
-            frame_timestamp_ms, landmark_array, None, final_frame, params
-        )
+        recorder.record_data(frame_timestamp_ms, landmark_array, None, params)
 
     if display_frame.display_frame is not None:
         cv.imshow(f"Video", display_frame.display_frame)
@@ -240,8 +385,6 @@ while True:
         if is_recording:
             recorder.end_record()
             is_recording = False
-        if final_frame is not None:
-            recognition_thread.in_queue.put((frame_timestamp_ms + 1, final_frame))
         break
     elif key == ord("s"):
         if not is_recording:
@@ -257,6 +400,14 @@ while True:
             is_recording = False
             record_count += 1
             print("録画を終了しました")
+    elif key == ord("f"):  # 'f' キーが押された場合の処理を追加
+        # 現在のウィンドウプロパティを取得し、フルスクリーン状態を切り替える
+        current_prop = cv.getWindowProperty("Video", cv.WND_PROP_FULLSCREEN)
+        if current_prop == cv.WINDOW_FULLSCREEN:
+            # フルスクリーンならノーマルに戻す
+            cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_NORMAL)
+        else:
+            # ノーマルならフルスクリーンにする
+            cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
 
-# 終了処理
 cv.destroyAllWindows()
