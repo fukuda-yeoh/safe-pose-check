@@ -9,20 +9,13 @@ import cv2 as cv
 import numpy as np
 from threading import Thread
 
-# playsoundライブラリをインポート
-try:
-    from playsound import playsound
-except ImportError:
-    print("警告: playsoundライブラリが見つかりません。'pip install playsound' でインストールしてください。")
-    playsound = None
-
 from components import (
     CameraThread,
     RecognitionThread,
     RecordWorker,
     EventDetector,
     EventState,
-    DisplayFrame,
+    DisplayFrame,play_buzzer_sound, play_ok_sound, play_detect_sound
 )
 from defs import project_root
 from funcs.landmark_funcs import (
@@ -126,10 +119,6 @@ _result_img_display_width = 300
 _result_img_display_height = 300
 # ----------------------------
 
-# --- 音声関連の変数 ---
-buzzer_sound_path = str(project_root() / "buzzer.wav")
-ok_sound_path = str(project_root() / "OK.mp3")
-detect_sound_path = str(project_root() / "detect.mp3")
 
 _buzzer_played_for_current_ng = False
 _ok_played_for_current_ok = False
@@ -139,16 +128,6 @@ _detect_played_for_look_right = False
 _detect_played_for_point_left = False
 _detect_played_for_point_right = False
 
-
-def play_sound_async(sound_file_path):
-    """指定された音源ファイルを非同期で再生する関数"""
-    if playsound and os.path.exists(sound_file_path):
-        try:
-            playsound(sound_file_path)
-        except Exception as e:
-            print(f"音源ファイル '{sound_file_path}' の再生中にエラーが発生しました: {e}")
-    else:
-        print(f"音源ファイル '{sound_file_path}' が見つからないか、playsoundが利用できません。")
 
 
 # ----------------------------
@@ -192,8 +171,8 @@ while True:
         # そのため、ここでは `event_detector.state` と `event_detector._previous_state` を比較して、
         # 状態遷移を検知するのが適切
         if (
-            event_detector.state == EventState.ENTERED_ROI
-            and event_detector._previous_state != EventState.ENTERED_ROI
+                event_detector.state == EventState.ENTERED_ROI
+                and event_detector._previous_state != EventState.ENTERED_ROI
         ):  # ROIに新しく侵入した場合
             _detect_played_for_look_left = False
             _detect_played_for_look_right = False
@@ -222,9 +201,7 @@ while True:
         if _fixed_look_left_pos is not None:
             display_frame.set_text_feedback("Look Left", _fixed_look_left_pos)
             if not _detect_played_for_look_left:
-                threading.Thread(
-                    target=play_sound_async, args=(detect_sound_path,)
-                ).start()
+                play_detect_sound()
                 _detect_played_for_look_left = True
         # else: fixed_posがNoneでテキスト表示できていない場合
         # do nothing with flag here, let the fixed_pos be set first
@@ -245,9 +222,7 @@ while True:
         if _fixed_look_right_pos is not None:
             display_frame.set_text_feedback("Look Right", _fixed_look_right_pos)
             if not _detect_played_for_look_right:
-                threading.Thread(
-                    target=play_sound_async, args=(detect_sound_path,)
-                ).start()
+                play_detect_sound()
                 _detect_played_for_look_right = True
         # else:
         # do nothing with flag here
@@ -268,9 +243,7 @@ while True:
         if _fixed_point_left_pos is not None:
             display_frame.set_text_feedback("Point Left", _fixed_point_left_pos)
             if not _detect_played_for_point_left:
-                threading.Thread(
-                    target=play_sound_async, args=(detect_sound_path,)
-                ).start()
+                play_detect_sound()
                 _detect_played_for_point_left = True
         # else:
         # do nothing with flag here
@@ -291,9 +264,7 @@ while True:
         if _fixed_point_right_pos is not None:
             display_frame.set_text_feedback("Point Right", _fixed_point_right_pos)
             if not _detect_played_for_point_right:
-                threading.Thread(
-                    target=play_sound_async, args=(detect_sound_path,)
-                ).start()
+                play_detect_sound()
                 _detect_played_for_point_right = True
         # else:
         # do nothing with flag here
@@ -317,7 +288,7 @@ while True:
             )
             # OK画像表示と同時にOK音を鳴らす (一度だけ)
             if not _ok_played_for_current_ok:
-                threading.Thread(target=play_sound_async, args=(ok_sound_path,)).start()
+                play_ok_sound()
                 _ok_played_for_current_ok = True
             _buzzer_played_for_current_ng = False  # NGブザーフラグをリセット
         else:  # NGの条件
@@ -332,9 +303,7 @@ while True:
             )
             # NG画像表示と同時にブザーを鳴らす (一度だけ)
             if not _buzzer_played_for_current_ng:
-                threading.Thread(
-                    target=play_sound_async, args=(buzzer_sound_path,)
-                ).start()
+                play_buzzer_sound()
                 _buzzer_played_for_current_ng = True
             _ok_played_for_current_ok = False  # OK音再生フラグをリセット
     else:
