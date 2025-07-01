@@ -1,6 +1,8 @@
+# main_live.py
+
 import os
-import time
 import threading
+import json  # jsonモジュールをインポート
 
 # https://github.com/opencv/opencv/issues/17687
 os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
@@ -25,7 +27,11 @@ from funcs.landmark_funcs import (
     get_landmark_labels,
 )
 
-# カメラ行列と歪み係数
+# 設定ファイルのパスを定義
+CONFIG_DIR = project_root() / "config"
+CONFIG_FILE = CONFIG_DIR / "roi_config.json"
+
+# カメラ行列と歪み係数 (既存のものをそのまま使用)
 camera_matrix = np.array(
     [
         [635.8283543606941, 0.0, 253.67538054709416],
@@ -51,7 +57,7 @@ landmarks_def_path = project_root() / "models" / "landmarks.txt"
 save_dir = project_root() / "record"
 save_dir.mkdir(exist_ok=True)
 
-camera_thread = CameraThread(1, camera_matrix, dist_coeffs)
+camera_thread = CameraThread(1, camera_matrix, dist_coeffs)  # カメラ番号は適宜変更
 recognition_thread = RecognitionThread(model_path, camera_thread.queue)
 
 landmark_labels = get_landmark_labels(landmarks_def_path)
@@ -60,20 +66,20 @@ record_count = 1
 is_recording = False
 
 # --- エリア定義 ---
-roi_points = [(0, 0.645), (0, 0.79), (0.713, 0.633), (0.525, 0.55)]
-display_check_area_points = [
-    (0.15, 0.755),  # 左上
-    (0.23, 0.86),  # 左下
-    (0.79, 0.72),  # 右下
-    (0.65, 0.645),  # 右上
-]
-clear_roi_points = [
-    (0.23, 0.86),  # 左上
-    (0.325, 1.00),  # 左下
-    (1, 1),
-    (1, 0.817),  # 右下
-    (0.79, 0.72),  # 右上
-]
+# 設定ファイルからROIポイントを読み込む
+roi_points = []
+display_check_area_points = []
+clear_roi_points = []
+
+if CONFIG_FILE.exists():
+    with open(CONFIG_FILE, "r") as f:
+        loaded_config = json.load(f)
+        roi_points = loaded_config.get("roi_points", [])
+        display_check_area_points = loaded_config.get("display_check_area_points", [])
+        clear_roi_points = loaded_config.get("clear_roi_points", [])
+    print(f"ROI configuration loaded from {CONFIG_FILE}")
+else:
+    print("ROI configuration file not found. Using default values.")
 # ------------------
 
 event_detector = EventDetector(
@@ -92,7 +98,7 @@ detector_thread.start()
 camera_thread.start()
 
 cv.namedWindow("Video", cv.WINDOW_NORMAL)
-# cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
+# cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN) # ドラッグ可能にするためコメントアウト
 
 # --- 固定表示位置を保持する変数 (テキスト用) ---
 # これらの座標は、ウィンドウのサイズに合わせて調整が必要かもしれません
@@ -162,15 +168,10 @@ while True:
     if event_detector.state == EventState.ENTERED_ROI:
         display_frame.set_person_detection_info(person_bbox_coords, dim_mask_needed)
 
-        # 新規追加: ENTERED_ROIになったらdetect.mp3の再生フラグをすべてリセット
-        # _previous_state は EventDetectorのインスタンス変数
-        # event_detector.run() メソッドの冒頭で event_detector._previous_state が更新される
-        # そのため、ここでは `event_detector.state` と `event_detector._previous_state` を比較して、
-        # 状態遷移を検知するのが適切
         if (
             event_detector.state == EventState.ENTERED_ROI
             and event_detector._previous_state != EventState.ENTERED_ROI
-        ):  # ROIに新しく侵入した場合
+        ):
             _detect_played_for_look_left = False
             _detect_played_for_look_right = False
             _detect_played_for_point_left = False
@@ -340,8 +341,6 @@ while True:
 
     if display_frame.display_frame is not None:
         cv.imshow(f"Video", display_frame.display_frame)
-    else:
-        pass
 
     key = cv.waitKey(1)
     if key == ord("q"):
@@ -366,14 +365,11 @@ while True:
             is_recording = False
             record_count += 1
             print("録画を終了しました")
-    elif key == ord("f"):  # 'f' キーが押された場合の処理を追加
-        # 現在のウィンドウプロパティを取得し、フルスクリーン状態を切り替える
+    elif key == ord("f"):
         current_prop = cv.getWindowProperty("Video", cv.WND_PROP_FULLSCREEN)
         if current_prop == cv.WINDOW_FULLSCREEN:
-            # フルスクリーンならノーマルに戻す
             cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_NORMAL)
         else:
-            # ノーマルならフルスクリーンにする
             cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
 
 cv.destroyAllWindows()
