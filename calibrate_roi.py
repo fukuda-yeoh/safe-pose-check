@@ -16,6 +16,11 @@ areas_to_define = {
     "display_check_area_points": [],
     "clear_roi_points": [],
 }
+area_color = {
+    "roi_points": (0, 255, 0),
+    "display_check_area_points": (255, 0, 255),
+    "clear_roi_points": (0, 0, 255),
+}
 camera_matrix = None  # 仮の値を設定するか、キャリブレーションファイルから読み込む
 dist_coeffs = None  # 仮の値を設定するか、キャリブレーションファイルから読み込む
 
@@ -96,9 +101,6 @@ def main():
     cv2.namedWindow("ROI Setup", cv2.WINDOW_NORMAL)
     cv2.setMouseCallback("ROI Setup", mouse_callback)
 
-    # 既存のROI設定を読み込む
-    load_roi_config()
-
     print("--- ROI Setup Mode ---")
     print("Click points counter-clockwise to define an area.")
     print("Right-click to remove the last point.")
@@ -132,16 +134,36 @@ def main():
         # 現在設定中のエリアの点と線を描画
         if drawing_points:
             for i, point in enumerate(drawing_points):
-                cv2.circle(display_frame, point, 5, (0, 255, 0), -1)  # 緑色の点
+                cv2.circle(display_frame, point, 5, (255, 0, 0), -1)  # 緑色の点
                 if i > 0:
                     cv2.line(
-                        display_frame, drawing_points[i - 1], point, (0, 255, 0), 2
+                        display_frame, drawing_points[i - 1], point, (255, 0, 0), 2
                     )
             # 最後の点と最初の点を結ぶ線
             if len(drawing_points) > 2:
                 cv2.line(
-                    display_frame, drawing_points[-1], drawing_points[0], (0, 255, 0), 2
+                    display_frame, drawing_points[-1], drawing_points[0], (255, 0, 0), 2
                 )
+
+        for area_name, points in areas_to_define.items():
+            if points:
+                for i, point in enumerate(points):
+                    cv2.circle(
+                        display_frame, point, 5, area_color[area_name], -1
+                    )  # 緑色の点
+                    if i > 0:
+                        cv2.line(
+                            display_frame,
+                            points[i - 1],
+                            point,
+                            area_color[area_name],
+                            2,
+                        )
+                # 最後の点と最初の点を結ぶ線
+                if len(points) > 2:
+                    cv2.line(
+                        display_frame, points[-1], points[0], area_color[area_name], 2
+                    )
 
         # 既に保存されている他のエリアを描画（もしあれば）
         # 正規化された座標をピクセル座標に戻して描画
