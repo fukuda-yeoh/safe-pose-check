@@ -108,24 +108,39 @@ _fixed_point_left_pos = (375, 250)  # 左下の判定用テキスト位置
 _fixed_point_right_pos = (120, 250)  # 右下の判定用テキスト位置
 # ------------------------------
 
-# --- 判定結果画像関連の変数 ---
-_ok_img = None
-_ng_img = None
-
-# OK/NG画像を読み込む
+# --- 各種画像を読み込む ---
 ok_img_path = project_root() / "OK.png"
 ng_img_path = project_root() / "NG.png"
+ankn_img_path = project_root() / "Area.png"
+action_img_path = project_root() / "Action.png"  # 【追加】Action.pngのパス設定
+
 _ok_img = cv.imread(str(ok_img_path), cv.IMREAD_UNCHANGED)
 _ng_img = cv.imread(str(ng_img_path), cv.IMREAD_UNCHANGED)
+_ankn_img = cv.imread(str(ankn_img_path), cv.IMREAD_UNCHANGED)
+_action_img = cv.imread(
+    str(action_img_path), cv.IMREAD_UNCHANGED
+)  # 【追加】Action.pngの読み込み
 
 if _ok_img is None:
     print(f"警告: {ok_img_path} が見つからないか読み込めません。")
 if _ng_img is None:
     print(f"警告: {ng_img_path} が見つからないか読み込めません。")
+if _ankn_img is None:
+    print(f"警告: {ankn_img_path} が見つからないか読み込めません。")
+if _action_img is None:
+    print(f"警告: {action_img_path} が見つからないか読み込めません。")  # 【追加】警告文
 
 # 判定結果画像の表示サイズ
 _result_img_display_width = 300
 _result_img_display_height = 300
+
+# 待機画面画像の表示サイズ
+_ankn_img_display_width = 400
+_ankn_img_display_height = 400
+
+# 行動啓発画像の表示サイズ
+_action_img_display_width = 400  # 【追加】Action.pngのサイズ指定
+_action_img_display_height = 400
 # ----------------------------
 _buzzer_played_for_current_ng = False
 _ok_played_for_current_ok = False
@@ -222,7 +237,7 @@ while True:
     else:
         display_frame.clear_dynamic_img("Camera")
 
-    # 画面の基本描画（枠線、OK/NG画像の貼り付けなど）を更新
+    # 画面の基本描画（枠線、画像の貼り付けなど）を更新
     display_frame.update_display()
 
     # === 【追加】判定表示エリアにいる場合のみ、右側にスコアボードを重ね書きする ===
@@ -254,11 +269,10 @@ while True:
     display_frame.set_counts(confirmed_count, entered_count)
 
     # --- テキストフィードバックの表示とdetect.mp3再生ロジック ---
-    # (音が鳴るロジックはそのまま残し、画面へのリアルタイムテキスト重畳のみフェーズ1ではスキップ)
     if event_detector.state == EventState.ENTERED_ROI:
         display_frame.clear_text_feedbacks()  # リアルタイムテキストは表示しない
 
-    # 音声のトリガーを引くための既存のイベントチェック（音声通知機能は維持）
+    # 音声のトリガーを引くための既存のイベントチェック
     for ev_name, flg_attr in [
         ("Look Left", "_detect_played_for_look_left"),
         ("Look Right", "_detect_played_for_look_right"),
@@ -272,7 +286,7 @@ while True:
         else:
             exec(f"{flg_attr} = False")
 
-    # --- 判定結果画像（OK / NG スタンプ）表示ロジック ---
+    # --- 画像（OK / NG / 待機画像 / 行動中画像）表示制御ロジック ---
     if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
         cam_w, cam_h = (
             (original_w, original_h) if final_frame is not None else (640, 480)
@@ -306,7 +320,34 @@ while True:
                 play_buzzer_sound()
                 _buzzer_played_for_current_ng = True
             _ok_played_for_current_ok = False
+
+    elif event_detector.state == EventState.ENTERED_ROI:
+        # 【追加】ユーザーがエリア内にいる（動作中）時、Action.png を中央に表示
+        if _action_img is not None and final_frame is not None:
+            display_frame.set_result_image(
+                _action_img,
+                (
+                    (original_w - _action_img_display_width) // 2,  # 中央揃えX
+                    (original_h - _action_img_display_height) // 2,  # 中央揃えY
+                    _action_img_display_width,
+                    _action_img_display_height,
+                ),
+            )
+
+    elif event_detector.state == EventState.NO_PERSON:
+        # ユーザーがいない待機状態の時、00.ankn.png を中央に表示
+        if _ankn_img is not None and final_frame is not None:
+            display_frame.set_result_image(
+                _ankn_img,
+                (
+                    (original_w - _ankn_img_display_width) // 2,
+                    (original_h - _ankn_img_display_height) // 2,
+                    _ankn_img_display_width,
+                    _ankn_img_display_height,
+                ),
+            )
     else:
+        # リセットエリアなど、その他の状態では画像を非表示にする
         display_frame.set_result_image(None)
         _buzzer_played_for_current_ng = False
         _ok_played_for_current_ok = False
