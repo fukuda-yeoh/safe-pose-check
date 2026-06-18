@@ -74,7 +74,7 @@ def load_roi_config():
 def main():
     global drawing_points, current_area_name, areas_to_define, camera_matrix, dist_coeffs
 
-    # カメラキャリブレーションデータ（main_live.pyから流用）
+    # カメラキャリブレーションデータ
     camera_matrix = np.array(
         [
             [635.8283543606941, 0.0, 253.67538054709416],

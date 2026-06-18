@@ -31,7 +31,7 @@ from funcs.landmark_funcs import (
 CONFIG_DIR = project_root() / "config"
 CONFIG_FILE = CONFIG_DIR / "roi_config.json"
 
-# カメラ行列と歪み係数 (既存のものをそのまま使用)
+# カメラ行列と歪み係数
 camera_matrix = np.array(
     [
         [635.8283543606941, 0.0, 253.67538054709416],
@@ -152,6 +152,52 @@ while True:
 
     if final_frame is not None:
         original_h, original_w, _ = final_frame.shape
+        # ======================================================================
+        # 【追加】リアルタイムスコアの描画表示ロジック
+        # ======================================================================
+        # 現在検出されている各アクションの最高スコアを取得
+        current_scores = event_detector.scores
+        ll_score = current_scores.get("LL_score", 0)
+        lr_score = current_scores.get("LR_score", 0)
+        pl_score = current_scores.get("PL_score", 0)
+        pr_score = current_scores.get("PR_score", 0)
+
+        # 画面の左上に黒い背景付きの文字でリアルタイムにスコアを描画
+        # (視認性を高めるため、黒の縁取り/背景をつけています)
+        score_texts = [
+            f"Score - Look Left:  {ll_score} pts",
+            f"Score - Look Right: {lr_score} pts",
+            f"Score - Point Left: {pl_score} pts",
+            f"Score - Point Right:{pr_score} pts",
+        ]
+
+        # 文字を描画する初期位置 (X=20, Y=40)
+        text_x, text_y = 20, 40
+        for text in score_texts:
+            # 文字の背景に黒い影（シャドウ）をいれて見やすくする
+            cv.putText(
+                final_frame,
+                text,
+                (text_x + 1, text_y + 1),
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 0, 0),
+                2,
+                cv.LINE_AA,
+            )
+            # メインの文字（緑色）を描画
+            cv.putText(
+                final_frame,
+                text,
+                (text_x, text_y),
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                2,
+                cv.LINE_AA,
+            )
+            text_y += 25  # 次の行へ移動
+        # ======================================================================
         display_frame.set_dynamic_img(
             "Camera", final_frame, (0, 0, original_w, original_h)
         )

@@ -88,7 +88,7 @@ class EventDetector:
             "Look Left": {
                 "param": "head",
                 "landmark": "nose",
-                "conditional": "30 > param > 0",
+                "conditional": "25 > param > 0",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -98,7 +98,7 @@ class EventDetector:
             "Look Right": {
                 "param": "head",
                 "landmark": "nose",
-                "conditional": "param > 130",
+                "conditional": "param > 155",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -108,7 +108,7 @@ class EventDetector:
             "Point Left": {
                 "param": "arm_high",
                 "landmark": "right wrist",
-                "conditional": "param > 0.6 and 50 > params['forearm'] > 0",
+                "conditional": "param > 0.6 and 25 > params['forearm'] > 0",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -118,7 +118,7 @@ class EventDetector:
             "Point Right": {
                 "param": "arm_high",
                 "landmark": "right wrist",
-                "conditional": "param > 0.6 and params['forearm'] > 130",
+                "conditional": "param > 0.6 and params['forearm'] > 155",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -502,7 +502,7 @@ class EventDetector:
 
     @staticmethod
     def get_angle_vector(vec):
-        roi_vec = np.array([0.34813878, -0.07059366, 0.1838913])
+        roi_vec = np.array([0.39984328, -0.00829113, 0.00752544])
         vec_scale = np.linalg.norm(vec)
         roi_vec_scale = np.linalg.norm(roi_vec)
 
