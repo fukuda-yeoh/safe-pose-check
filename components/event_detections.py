@@ -1,6 +1,7 @@
 import time
 from enum import Enum
 from queue import Queue
+from collections import deque
 
 import cv2 as cv
 import numpy as np
@@ -59,6 +60,10 @@ class EventDetector:
             "PR_score": 0,
         }
 
+        # === 追加：リプレイ動画用バッファ===
+        self.replay_buffer = deque(maxlen=1000)
+        self.replay_index = 0
+
         self.person_bbox = None
         self.dim_mask_needed = False
 
@@ -79,6 +84,8 @@ class EventDetector:
         # _last_session_all_items_confirmedもrun()で管理される。
         self.events = self.default_event()
         self.scores = {key: 0 for key in self.scores}
+        self.replay_buffer.clear()  # 👈 追加
+        self.replay_index = 0  # 👈 追加
         self._confirmed_for_current_entry = False
         self._all_items_confirmed_in_current_session = False  # ここで現在のセッションフラグをリセット
 
@@ -181,6 +188,10 @@ class EventDetector:
                 params, frame_with_roi, events = self.run(landmark_array, frame)
 
                 self.update_scores(params)
+                # === 追加：ROI滞在中のオリジナルフレームをバッファに保存 ===
+                if self.state == EventState.ENTERED_ROI:
+                    self.replay_buffer.append(frame.copy())  # エフェクト前の綺麗な映像を保存
+                # =======================================================
 
                 display_frame_for_output = frame_with_roi
 

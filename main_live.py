@@ -147,73 +147,98 @@ while True:
         dim_mask_needed,
         confirmed_count,
         entered_count,
-        last_session_all_items_confirmed,  # event_detections.pyから取得
+        last_session_all_items_confirmed,
     ) = event_detector.out_queue.get()
 
     if final_frame is not None:
         original_h, original_w, _ = final_frame.shape
-        # ======================================================================
-        # 【追加】リアルタイムスコアの描画表示ロジック
-        # ======================================================================
-        # 現在検出されている各アクションの最高スコアを取得
-        current_scores = event_detector.scores
-        ll_score = current_scores.get("LL_score", 0)
-        lr_score = current_scores.get("LR_score", 0)
-        pl_score = current_scores.get("PL_score", 0)
-        pr_score = current_scores.get("PR_score", 0)
 
-        # 画面の左上に黒い背景付きの文字でリアルタイムにスコアを描画
-        # (視認性を高めるため、黒の縁取り/背景をつけています)
-        score_texts = [
-            f"Score - Look Left:  {ll_score} pts",
-            f"Score - Look Right: {lr_score} pts",
-            f"Score - Point Left: {pl_score} pts",
-            f"Score - Point Right:{pr_score} pts",
-        ]
+        # ----------------------------------------------------------------------
+        # 【教育システム仕様】フェーズ別UI切り替えロジック
+        # ----------------------------------------------------------------------
+        if event_detector.state == EventState.ENTERED_ROI:
+            # 【フェーズ1: 動作中】画面を見せないために、あえて生のカメラ映像をそのまま使用
+            # 画面上部に行動啓発メッセージのみを大きく表示する
+            display_frame.set_dynamic_img(
+                "Camera", final_frame, (0, 0, original_w, original_h)
+            )
 
-        # 文字を描画する初期位置 (X=20, Y=40)
-        text_x, text_y = 20, 40
-        for text in score_texts:
-            # 文字の背景に黒い影（シャドウ）をいれて見やすくする
+            # メッセージ描画 (案内テキスト)
+            cv.rectangle(final_frame, (0, 0), (original_w, 60), (0, 0, 0), -1)
             cv.putText(
                 final_frame,
-                text,
-                (text_x + 1, text_y + 1),
+                "PLEASE PERFORM SAFE POSE CHECK (LOOK & POINT)",
+                (30, 40),
                 cv.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 0, 0),
+                0.7,
+                (0, 255, 255),
                 2,
                 cv.LINE_AA,
             )
-            # メインの文字（緑色）を描画
-            cv.putText(
-                final_frame,
-                text,
-                (text_x, text_y),
-                cv.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 0),
-                2,
-                cv.LINE_AA,
+
+        elif event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
+            # 【フェーズ2: 結果・リプレイ確認】
+            # メモリに溜まったリプレイバッファがあれば、それをパラパラマンガ風に再生
+            if len(event_detector.replay_buffer) > 0:
+                idx = event_detector.replay_index % len(event_detector.replay_buffer)
+                replay_frame = event_detector.replay_buffer[idx].copy()
+                event_detector.replay_index += 1  # 次のフレームへ
+
+                # 画面の左側（リプレイ動画領域）にサイズを縮小してリプレイを配置
+                # スコアパネル(280px)を除いた領域にフィットさせる
+                display_w = original_w - 280
+                replay_resized = cv.resize(replay_frame, (display_w, original_h))
+
+                # 「REPLAY」という透かし文字を動画内に入れる
+                cv.putText(
+                    replay_resized,
+                    "● REPLAY",
+                    (20, 40),
+                    cv.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 0, 255),
+                    2,
+                    cv.LINE_AA,
+                )
+
+                # 右側のスコアボード用に、横幅を元のサイズ(original_w)に拡張した土台を作る
+                base_frame = np.zeros((original_h, original_w, 3), dtype=np.uint8)
+                base_frame[:, :display_w] = replay_resized
+
+                display_frame.set_dynamic_img(
+                    "Camera", base_frame, (0, 0, original_w, original_h)
+                )
+            else:
+                display_frame.set_dynamic_img(
+                    "Camera", final_frame, (0, 0, original_w, original_h)
+                )
+        else:
+            # 【フェーズ3: 待機中 / 初期状態】
+            display_frame.set_dynamic_img(
+                "Camera", final_frame, (0, 0, original_w, original_h)
             )
-            text_y += 25  # 次の行へ移動
-        # ======================================================================
-        display_frame.set_dynamic_img(
-            "Camera", final_frame, (0, 0, original_w, original_h)
-        )
+        # ----------------------------------------------------------------------
+
     else:
         display_frame.clear_dynamic_img("Camera")
 
-    # 信号機の状態更新ロジック
-    # 判定表示エリアにいる間は信号機を更新しない
+    # 画面の基本描画（枠線、OK/NG画像の貼り付けなど）を更新
+    display_frame.update_display()
+
+    # === 【追加】判定表示エリアにいる場合のみ、右側にスコアボードを重ね書きする ===
+    if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
+        display_frame.draw_score_board(event_detector.scores)
+    # ======================================================================
+
+    # 信号機の状態更新ロジック (動作中は画面から隠れているので裏で更新される)
     if event_detector.state != EventState.ENTERED_DISPLAY_CHECK_AREA:
         for name, event_data in events.items():
             display_frame.set_traffic_light_state(name, event_data["detected"])
 
-    # 人物の枠と薄暗い効果の設定ロジック
+    # 人物の枠と薄暗い効果の設定ロジック (指示フェーズでは無効化してすっきりさせる)
     if event_detector.state == EventState.ENTERED_ROI:
-        display_frame.set_person_detection_info(person_bbox_coords, dim_mask_needed)
-
+        # 動作に集中させるため、バウンディングボックスの描画指定をOFF(None)にする
+        display_frame.set_person_detection_info(None, False)
         if (
             event_detector.state == EventState.ENTERED_ROI
             and event_detector._previous_state != EventState.ENTERED_ROI
@@ -222,7 +247,6 @@ while True:
             _detect_played_for_look_right = False
             _detect_played_for_point_left = False
             _detect_played_for_point_right = False
-
     else:
         display_frame.set_person_detection_info(None, False)
 
@@ -230,161 +254,78 @@ while True:
     display_frame.set_counts(confirmed_count, entered_count)
 
     # --- テキストフィードバックの表示とdetect.mp3再生ロジック ---
-    cam_w, cam_h = (original_w, original_h) if final_frame is not None else (640, 480)
+    # (音が鳴るロジックはそのまま残し、画面へのリアルタイムテキスト重畳のみフェーズ1ではスキップ)
+    if event_detector.state == EventState.ENTERED_ROI:
+        display_frame.clear_text_feedbacks()  # リアルタイムテキストは表示しない
 
-    # Look Left
-    is_look_left_detected = events.get("Look Left", {}).get("detected", False)
-    if is_look_left_detected:
-        if _fixed_look_left_pos is None:
-            display_pos = events.get("Look Left", {}).get("display_pos")
-            if display_pos:
-                text_x = int(display_pos[0] * cam_w)
-                text_y = int(display_pos[1] * cam_h)
-                _fixed_look_left_pos = (text_x, text_y)
-
-        if _fixed_look_left_pos is not None:
-            display_frame.set_text_feedback("Look Left", _fixed_look_left_pos)
-            if not _detect_played_for_look_left:
+    # 音声のトリガーを引くための既存のイベントチェック（音声通知機能は維持）
+    for ev_name, flg_attr in [
+        ("Look Left", "_detect_played_for_look_left"),
+        ("Look Right", "_detect_played_for_look_right"),
+        ("Point Left", "_detect_played_for_point_left"),
+        ("Point Right", "_detect_played_for_point_right"),
+    ]:
+        if events.get(ev_name, {}).get("detected", False):
+            if not locals()[flg_attr]:
                 play_detect_sound()
-                _detect_played_for_look_left = True
-        # else: fixed_posがNoneでテキスト表示できていない場合
-        # do nothing with flag here, let the fixed_pos be set first
-    else:  # イベントが検出されなくなった場合
-        display_frame.set_text_feedback("Look Left", None)
-        _detect_played_for_look_left = False
+                exec(f"{flg_attr} = True")
+        else:
+            exec(f"{flg_attr} = False")
 
-    # Look Right
-    is_look_right_detected = events.get("Look Right", {}).get("detected", False)
-    if is_look_right_detected:
-        if _fixed_look_right_pos is None:
-            display_pos = events.get("Look Right", {}).get("display_pos")
-            if display_pos:
-                text_x = int(display_pos[0] * cam_w)
-                text_y = int(display_pos[1] * cam_h)
-                _fixed_look_right_pos = (text_x, text_y)
-
-        if _fixed_look_right_pos is not None:
-            display_frame.set_text_feedback("Look Right", _fixed_look_right_pos)
-            if not _detect_played_for_look_right:
-                play_detect_sound()
-                _detect_played_for_look_right = True
-        # else:
-        # do nothing with flag here
-    else:
-        display_frame.set_text_feedback("Look Right", None)
-        _detect_played_for_look_right = False
-
-    # Point Left
-    is_point_left_detected = events.get("Point Left", {}).get("detected", False)
-    if is_point_left_detected:
-        if _fixed_point_left_pos is None:
-            display_pos = events.get("Point Left", {}).get("display_pos")
-            if display_pos:
-                text_x = int(display_pos[0] * cam_w)
-                text_y = int(display_pos[1] * cam_h)
-                _fixed_point_left_pos = (text_x, text_y)
-
-        if _fixed_point_left_pos is not None:
-            display_frame.set_text_feedback("Point Left", _fixed_point_left_pos)
-            if not _detect_played_for_point_left:
-                play_detect_sound()
-                _detect_played_for_point_left = True
-        # else:
-        # do nothing with flag here
-    else:
-        display_frame.set_text_feedback("Point Left", None)
-        _detect_played_for_point_left = False
-
-    # Point Right
-    is_point_right_detected = events.get("Point Right", {}).get("detected", False)
-    if is_point_right_detected:
-        if _fixed_point_right_pos is None:
-            display_pos = events.get("Point Right", {}).get("display_pos")
-            if display_pos:
-                text_x = int(display_pos[0] * cam_w)
-                text_y = int(display_pos[1] * cam_h)
-                _fixed_point_right_pos = (text_x, text_y)
-
-        if _fixed_point_right_pos is not None:
-            display_frame.set_text_feedback("Point Right", _fixed_point_right_pos)
-            if not _detect_played_for_point_right:
-                play_detect_sound()
-                _detect_played_for_point_right = True
-        # else:
-        # do nothing with flag here
-    else:
-        display_frame.set_text_feedback("Point Right", None)
-        _detect_played_for_point_right = False
-    # ------------------------------------------
-
-    # --- 判定結果画像表示ロジック ---
-    # 判定表示エリアに侵入した場合
+    # --- 判定結果画像（OK / NG スタンプ）表示ロジック ---
     if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
-        if last_session_all_items_confirmed:  # OKの条件
+        cam_w, cam_h = (
+            (original_w, original_h) if final_frame is not None else (640, 480)
+        )
+        display_w = cam_w - 280  # スコアボードを除いた中央にスタンプを出す
+        if last_session_all_items_confirmed:
             display_frame.set_result_image(
                 _ok_img,
                 (
-                    (cam_w - _result_img_display_width) // 2,  # 中央揃えX
-                    (cam_h - _result_img_display_height) // 2,  # 中央揃えY
+                    (display_w - _result_img_display_width) // 2,
+                    (cam_h - _result_img_display_height) // 2,
                     _result_img_display_width,
                     _result_img_display_height,
                 ),
             )
-            # OK画像表示と同時にOK音を鳴らす (一度だけ)
             if not _ok_played_for_current_ok:
                 play_ok_sound()
                 _ok_played_for_current_ok = True
-            _buzzer_played_for_current_ng = False  # NGブザーフラグをリセット
-        else:  # NGの条件
+            _buzzer_played_for_current_ng = False
+        else:
             display_frame.set_result_image(
                 _ng_img,
                 (
-                    (cam_w - _result_img_display_width) // 2,  # 中央揃えX
-                    (cam_h - _result_img_display_height) // 2,  # 中央揃えY
+                    (display_w - _result_img_display_width) // 2,
+                    (cam_h - _result_img_display_height) // 2,
                     _result_img_display_width,
                     _result_img_display_height,
                 ),
             )
-            # NG画像表示と同時にブザーを鳴らす (一度だけ)
             if not _buzzer_played_for_current_ng:
                 play_buzzer_sound()
                 _buzzer_played_for_current_ng = True
-            _ok_played_for_current_ok = False  # OK音再生フラグをリセット
+            _ok_played_for_current_ok = False
     else:
-        # 判定表示エリアから出たら画像をクリア
         display_frame.set_result_image(None)
-        _buzzer_played_for_current_ng = False  # 判定表示エリアを出たらブザーフラグをリセット
-        _ok_played_for_current_ok = False  # 判定表示エリアを出たらOK音再生フラグをリセット
+        _buzzer_played_for_current_ng = False
+        _ok_played_for_current_ok = False
 
-    # --------------------------------------------------------------------------
-
-    # --- リセットエリアに侵入した場合の処理 ---
+    # --- リセットエリアに入った場合の処理 ---
     if event_detector.state == EventState.EXITED_ROI:
-        # main_live.pyで表示のリセットはここで行う
-        display_frame.set_person_detection_info(None, False)  # 人物強調表示クリア
-        display_frame.clear_text_feedbacks()  # テキストフィードバッククリア
-        display_frame.set_result_image(None)  # 判定結果画像クリア
-        display_frame.reset_traffic_lights()  # 信号機リセット
-
-        # event_detectorの内部状態をリセット
-        event_detector.reset()
-
-        _buzzer_played_for_current_ng = False  # リセットエリアに入ったらブザーフラグをリセット
-        _ok_played_for_current_ok = False  # リセットエリアに入ったらOK音再生フラグをリセット
-
-        # 各判定項目ごとの再生フラグもリセット
+        display_frame.set_person_detection_info(None, False)
+        display_frame.clear_text_feedbacks()
+        display_frame.set_result_image(None)
+        display_frame.reset_traffic_lights()
+        event_detector.reset()  # スコアと動画バッファのクリア
+        _buzzer_played_for_current_ng = False
+        _ok_played_for_current_ok = False
         _detect_played_for_look_left = False
         _detect_played_for_look_right = False
         _detect_played_for_point_left = False
         _detect_played_for_point_right = False
 
-    # --------------------------------------------------------------------------
-
-    display_frame.update_display()
-
-    if is_recording:
-        recorder.record_data(frame_timestamp_ms, landmark_array, None, params)
-
+    # OpenCVのウィンドウに最終描画フレームを反映
     if display_frame.display_frame is not None:
         cv.imshow(f"Video", display_frame.display_frame)
 

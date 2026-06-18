@@ -385,6 +385,98 @@ class DisplayFrame:
 
         roi_dst[:] = roi_resized
 
+    # === 追加：教育用スコアボードの描画処理 ===
+    def draw_score_board(self, scores: dict):
+        """
+        画面右側に各動作の最終獲得スコアを分かりやすく表示する
+        """
+        if self.display_frame is None:
+            return self.display_frame
+
+        frame_h, frame_w, _ = self.display_frame.shape
+
+        # 右側の表示エリアの背景（黒の半透明風）
+        panel_w = 280
+        cv.rectangle(
+            self.display_frame,
+            (frame_w - panel_w, 0),
+            (frame_w, frame_h),
+            (30, 30, 30),
+            -1,
+        )
+        # 境界線
+        cv.line(
+            self.display_frame,
+            (frame_w - panel_w, 0),
+            (frame_w - panel_w, frame_h),
+            (255, 255, 255),
+            2,
+        )
+
+        # タイトル描画
+        cv.putText(
+            self.display_frame,
+            "TRAINING RESULT",
+            (frame_w - panel_w + 20, 40),
+            cv.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 215, 0),
+            2,
+            cv.LINE_AA,
+        )
+
+        # 各スコアの描画
+        score_items = [
+            ("Look Left", scores.get("LL_score", 0)),
+            ("Look Right", scores.get("LR_score", 0)),
+            ("Point Left", scores.get("PL_score", 0)),
+            ("Point Right", scores.get("PR_score", 0)),
+        ]
+
+        start_y = 90
+        for name, score in score_items:
+            # 項目名
+            cv.putText(
+                self.display_frame,
+                name,
+                (frame_w - panel_w + 20, start_y),
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (200, 200, 200),
+                1,
+                cv.LINE_AA,
+            )
+
+            # 点数 (80点以上は緑、それ未満は赤)
+            color = (0, 255, 0) if score >= 80 else (0, 0, 255)
+            cv.putText(
+                self.display_frame,
+                f"{score} pts",
+                (frame_w - panel_w + 160, start_y),
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2,
+                cv.LINE_AA,
+            )
+
+            # 簡易アドバイスの表示
+            advice = "Good!" if score >= 80 else "Need Practice"
+            cv.putText(
+                self.display_frame,
+                advice,
+                (frame_w - panel_w + 20, start_y + 20),
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                (150, 150, 150),
+                1,
+                cv.LINE_AA,
+            )
+
+            start_y += 65
+
+        return self.display_frame
+
 
 if __name__ == "__main__":
     display = DisplayFrame()
