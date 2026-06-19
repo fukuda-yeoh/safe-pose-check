@@ -60,16 +60,16 @@ class EventDetector:
             "PR_score": 0,
         }
 
-        # === 追加：リプレイ動画用バッファ===
-        self.replay_buffer = deque(maxlen=1000)
+        # リプレイ動画用バッファ (最大150フレーム=約5秒分)
+        self.replay_buffer = deque(maxlen=150)
         self.replay_index = 0
 
         self.person_bbox = None
         self.dim_mask_needed = False
 
-        self.entered_count = 0  # この変数はもう使わないが、一時的に残しておく
+        self.entered_count = 0
         self.confirmed_count = 0
-        self.fail_count = 0  # 新しいカウンター
+        self.fail_count = 0
 
         self._previous_state = EventState.NO_PERSON
 
@@ -78,16 +78,12 @@ class EventDetector:
         self._last_session_all_items_confirmed = False
 
     def reset(self):
-        # このresetは、イベント検出状態とスコアをリセットする。
-        # カウント（confirmed_count, fail_count）はリセットしない。
-        # _all_items_confirmed_in_current_sessionはrun()で管理される。
-        # _last_session_all_items_confirmedもrun()で管理される。
         self.events = self.default_event()
         self.scores = {key: 0 for key in self.scores}
-        self.replay_buffer.clear()  # 👈 追加
-        self.replay_index = 0  # 👈 追加
+        self.replay_buffer.clear()
+        self.replay_index = 0
         self._confirmed_for_current_entry = False
-        self._all_items_confirmed_in_current_session = False  # ここで現在のセッションフラグをリセット
+        self._all_items_confirmed_in_current_session = False
 
     @staticmethod
     def default_event():
@@ -95,7 +91,7 @@ class EventDetector:
             "Look Left": {
                 "param": "head",
                 "landmark": "nose",
-                "conditional": "25 > param > 0",
+                "conditional": "30 > param > 0",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -105,7 +101,7 @@ class EventDetector:
             "Look Right": {
                 "param": "head",
                 "landmark": "nose",
-                "conditional": "param > 155",
+                "conditional": "param > 130",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -115,7 +111,7 @@ class EventDetector:
             "Point Left": {
                 "param": "arm_high",
                 "landmark": "right wrist",
-                "conditional": "param > 0.6 and 25 > params['forearm'] > 0",
+                "conditional": "param > 0.6 and 50 > params['forearm'] > 0",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -125,7 +121,7 @@ class EventDetector:
             "Point Right": {
                 "param": "arm_high",
                 "landmark": "right wrist",
-                "conditional": "param > 0.6 and params['forearm'] > 155",
+                "conditional": "param > 0.6 and params['forearm'] > 130",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -188,18 +184,14 @@ class EventDetector:
                 params, frame_with_roi, events = self.run(landmark_array, frame)
 
                 self.update_scores(params)
-                # === 追加：ROI滞在中のオリジナルフレームをバッファに保存 ===
+
                 if self.state == EventState.ENTERED_ROI:
-                    self.replay_buffer.append(frame.copy())  # エフェクト前の綺麗な映像を保存
-                # =======================================================
+                    self.replay_buffer.append(frame.copy())
 
                 display_frame_for_output = frame_with_roi
-
                 dim_mask_needed = True
             else:
-                frame = self.draw_roi(
-                    frame,
-                )
+                frame = self.draw_roi(frame)
                 frame = self.draw_clear_roi(frame)
                 frame = self.draw_display_check_area(frame)
 
@@ -208,17 +200,15 @@ class EventDetector:
                 events = {}
                 dim_mask_needed = False
 
-                # 人物がいない場合、セッションの全確認フラグを記録し、リセット
-                # ここではFailをカウントしない。Failはdisplay_check_area_points侵入時のみカウントされる。
                 self._last_session_all_items_confirmed = (
                     self._all_items_confirmed_in_current_session
                 )
-                self._all_items_confirmed_in_current_session = False  # 現在のセッションフラグをリセット
+                self._all_items_confirmed_in_current_session = False
 
                 self.state = EventState.NO_PERSON
                 self._previous_state = EventState.NO_PERSON
                 self._confirmed_for_current_entry = False
-                self.reset_events_detected_state()  # 人物がいなくなったらイベント検出状態をリセット
+                self.reset_events_detected_state()
 
                 display_frame_for_output = frame
 
@@ -232,7 +222,7 @@ class EventDetector:
                     person_bbox_coords,
                     dim_mask_needed,
                     self.confirmed_count,
-                    self.fail_count,  # ここを fail_count に変更
+                    self.fail_count,
                     self._last_session_all_items_confirmed,
                 )
             )
@@ -242,52 +232,40 @@ class EventDetector:
         in_clear_roi = self.feet_inside_clear_roi(landmark_array)
         in_display_check_area = self.feet_inside_display_check_area(landmark_array)
 
-        self._previous_state = self.state  # 現在の状態を保存
+        self._previous_state = self.state
 
         if in_roi:
             self.state = EventState.ENTERED_ROI
             if self._previous_state != EventState.ENTERED_ROI:
                 self._confirmed_for_current_entry = False
-                self._all_items_confirmed_in_current_session = (
-                    False  # 新しいROIセッション開始時にリセット
-                )
+                self._all_items_confirmed_in_current_session = False
         elif in_clear_roi:
-            # リセットエリアにいる場合、fail_count はインクリメントしない
             self._last_session_all_items_confirmed = (
                 self._all_items_confirmed_in_current_session
             )
-            self._all_items_confirmed_in_current_session = False  # 現在のセッションフラグをリセット
+            self._all_items_confirmed_in_current_session = False
             self.state = EventState.EXITED_ROI
             self._confirmed_for_current_entry = False
-            # 信号機のリセットはここで行うが、検出結果のリセットは行わない
-            # reset_events_detected_state() はここでは呼び出さない
         elif in_display_check_area:
-            # 判定表示エリアにいる場合
             if self._previous_state != EventState.ENTERED_DISPLAY_CHECK_AREA:
                 self._last_session_all_items_confirmed = (
                     self._all_items_confirmed_in_current_session
                 )
-                # 判定表示エリアに侵入したが、全項目が確認されていない場合、Failをカウント
                 if not self._all_items_confirmed_in_current_session:
                     self.fail_count += 1
-                # 検出結果（イベントのdetectedフラグ）をここでリセット
-                self.reset_event_detected_flags_only()  # 新しいメソッドを呼び出す
+                self.reset_event_detected_flags_only()
 
             self.state = EventState.ENTERED_DISPLAY_CHECK_AREA
-            # 判定表示エリアにいる間は、信号機の状態をリセットしない
-            # イベント検出状態（信号機など）のリセットはここでは行わない
-        else:  # どのエリアにもいない場合 (判定表示エリアから出た場合も含む)
-            # どのエリアにもいない状態になったら、現在のROIセッションの状態を確定し、現在のセッションフラグをリセット
-            # ここではFailをカウントしない
-            if self._previous_state != EventState.NO_PERSON:  # 以前がNO_PERSONでなければ結果を確定
+        else:
+            if self._previous_state != EventState.NO_PERSON:
                 self._last_session_all_items_confirmed = (
                     self._all_items_confirmed_in_current_session
                 )
-                self._all_items_confirmed_in_current_session = False  # 現在のセッションフラグをリセット
+                self._all_items_confirmed_in_current_session = False
 
             self.state = EventState.NO_PERSON
             self._confirmed_for_current_entry = False
-            self.reset_events_detected_state()  # イベント検出状態（信号機など）をリセット
+            self.reset_events_detected_state()
 
         eye_vec = self.get_vector(landmark_array, "left eye", "right eye")
         down_vec = self.get_vector(landmark_array, "mid eye", "mid mouth")
@@ -322,10 +300,8 @@ class EventDetector:
                     self._confirmed_for_current_entry = True
                     self._all_items_confirmed_in_current_session = True
         elif self.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
-            # 判定表示エリアにいる場合はイベントチェックは行わない
-            # 信号機の状態は、ROIで検出された最終状態を保持する
             pass
-        else:  # ROI外（NO_PERSON または EXITED_ROI）ならイベント状態リセット (信号機を赤に戻す)
+        else:
             self.reset_events_detected_state()
 
         if landmark_array is not None:
@@ -349,10 +325,58 @@ class EventDetector:
                     frame, landmark_array, "right elbow", forearm_vec
                 )
 
+            # ==================================================================
+            # 【新機能】Manager画面に項目名とリアルタイム点数を常時書き込む
+            # ==================================================================
+            # その瞬間の点数を計算（腕が上がっていない場合は指差しスコアは0点とする）
+            current_ll = calculate_score_l(head_vec_angle, 25, 90)
+            current_lr = calculate_score_r(head_vec_angle, 90, 155)
+            current_pl = (
+                calculate_score_l(forearm_vec_angle, 25, 90) if arm_high > 0.6 else 0
+            )
+            current_pr = (
+                calculate_score_r(forearm_vec_angle, 90, 155) if arm_high > 0.6 else 0
+            )
+
+            manager_texts = [
+                "[ REALTIME SCORE ]",
+                f"Look Left:   {current_ll} pts",
+                f"Look Right:  {current_lr} pts",
+                f"Point Left:  {current_pl} pts",
+                f"Point Right: {current_pr} pts",
+            ]
+
+            # 画面左上に描画
+            tx, ty = 20, 40
+            for text in manager_texts:
+                # 視認性を高めるための黒い縁取り文字
+                cv.putText(
+                    frame,
+                    text,
+                    (tx + 1, ty + 1),
+                    cv.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 0, 0),
+                    2,
+                    cv.LINE_AA,
+                )
+                # メインの白文字
+                cv.putText(
+                    frame,
+                    text,
+                    (tx, ty),
+                    cv.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    1,
+                    cv.LINE_AA,
+                )
+                ty += 22
+            # ==================================================================
+
         return params, frame, self.events
 
     def reset_events_detected_state(self):
-        """全てのイベント検出状態と関連プロパティをリセットする（信号機など）"""
         for name in self.events:
             self.events[name]["detected"] = False
             self.events[name]["previous"] = 0
@@ -360,10 +384,9 @@ class EventDetector:
             self.events[name]["display_pos"] = None
 
     def reset_event_detected_flags_only(self):
-        """イベントのdetectedフラグのみをリセットする（信号機はそのまま）"""
         for name in self.events:
             self.events[name]["detected"] = False
-            self.events[name]["previous"] = 0  # previousもリセットして再判定を促す
+            self.events[name]["previous"] = 0
 
     def check_events(self, params, landmark_array, frame=None):
         for name, event in self.events.items():
@@ -489,11 +512,12 @@ class EventDetector:
 
     def draw_clear_roi(self, frame):
         if self.clear_roi_points is not None and len(self.clear_roi_points) > 0:
-            frame = draw_clear_roi_on_image(frame, self.clear_roi_points)
+            frame = draw_clear_roi_on_image(
+                frame, self.clear_roi_points
+            )  # 👈 self.clear_roi_points に修正
         return frame
 
     def draw_display_check_area(self, frame):
-        """判定表示エリアを描画する関数"""
         if (
             self.display_check_area_points is not None
             and len(self.display_check_area_points) > 0
@@ -513,7 +537,7 @@ class EventDetector:
 
     @staticmethod
     def get_angle_vector(vec):
-        roi_vec = np.array([0.39984328, -0.00829113, 0.00752544])
+        roi_vec = np.array([0.34813878, -0.07059366, 0.1838913])
         vec_scale = np.linalg.norm(vec)
         roi_vec_scale = np.linalg.norm(roi_vec)
 

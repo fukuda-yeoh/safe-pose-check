@@ -66,7 +66,6 @@ record_count = 1
 is_recording = False
 
 # --- エリア定義 ---
-# 設定ファイルからROIポイントを読み込む
 roi_points = []
 display_check_area_points = []
 clear_roi_points = []
@@ -97,29 +96,20 @@ recognition_thread.start()
 detector_thread.start()
 camera_thread.start()
 
-cv.namedWindow("Video", cv.WINDOW_NORMAL)
-# cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN) # ドラッグ可能にするためコメントアウト
-
-# --- 固定表示位置を保持する変数 (テキスト用) ---
-# これらの座標は、ウィンドウのサイズに合わせて調整が必要かもしれません
-_fixed_look_left_pos = (375, 150)  # 左上の判定用テキスト位置
-_fixed_look_right_pos = (120, 150)  # 右上の判定用テキスト位置
-_fixed_point_left_pos = (375, 250)  # 左下の判定用テキスト位置
-_fixed_point_right_pos = (120, 250)  # 右下の判定用テキスト位置
-# ------------------------------
+# ウィンドウを2つ定義
+cv.namedWindow("Monitor Window", cv.WINDOW_NORMAL)  # 訓練者が見る用
+cv.namedWindow("Manager Window", cv.WINDOW_NORMAL)  # 管理者・リアルタイム解析確認用
 
 # --- 各種画像を読み込む ---
 ok_img_path = project_root() / "OK.png"
 ng_img_path = project_root() / "NG.png"
 ankn_img_path = project_root() / "Area.png"
-action_img_path = project_root() / "Action.png"  # 【追加】Action.pngのパス設定
+action_img_path = project_root() / "Action.png"
 
 _ok_img = cv.imread(str(ok_img_path), cv.IMREAD_UNCHANGED)
 _ng_img = cv.imread(str(ng_img_path), cv.IMREAD_UNCHANGED)
 _ankn_img = cv.imread(str(ankn_img_path), cv.IMREAD_UNCHANGED)
-_action_img = cv.imread(
-    str(action_img_path), cv.IMREAD_UNCHANGED
-)  # 【追加】Action.pngの読み込み
+_action_img = cv.imread(str(action_img_path), cv.IMREAD_UNCHANGED)
 
 if _ok_img is None:
     print(f"警告: {ok_img_path} が見つからないか読み込めません。")
@@ -128,28 +118,22 @@ if _ng_img is None:
 if _ankn_img is None:
     print(f"警告: {ankn_img_path} が見つからないか読み込めません。")
 if _action_img is None:
-    print(f"警告: {action_img_path} が見つからないか読み込めません。")  # 【追加】警告文
+    print(f"警告: {action_img_path} が見つからないか読み込めません。")
 
-# 判定結果画像の表示サイズ
 _result_img_display_width = 300
 _result_img_display_height = 300
-
-# 待機画面画像の表示サイズ
 _ankn_img_display_width = 400
 _ankn_img_display_height = 400
-
-# 行動啓発画像の表示サイズ
-_action_img_display_width = 400  # 【追加】Action.pngのサイズ指定
+_action_img_display_width = 400
 _action_img_display_height = 400
 # ----------------------------
+
 _buzzer_played_for_current_ng = False
 _ok_played_for_current_ok = False
-# 各判定項目ごとの再生フラグ
 _detect_played_for_look_left = False
 _detect_played_for_look_right = False
 _detect_played_for_point_left = False
 _detect_played_for_point_right = False
-# ----------------------------
 
 while True:
     (
@@ -165,46 +149,45 @@ while True:
         last_session_all_items_confirmed,
     ) = event_detector.out_queue.get()
 
+    # Manager Window用のフレームとして、描画前のfinal_frameの状態を保持
+    manager_frame = final_frame.copy() if final_frame is not None else None
+
     if final_frame is not None:
         original_h, original_w, _ = final_frame.shape
 
-        # ----------------------------------------------------------------------
-        # 【教育システム仕様】フェーズ別UI切り替えロジック
-        # ----------------------------------------------------------------------
-        if event_detector.state == EventState.ENTERED_ROI:
-            # 【フェーズ1: 動作中】画面を見せないために、あえて生のカメラ映像をそのまま使用
-            # 画面上部に行動啓発メッセージのみを大きく表示する
-            display_frame.set_dynamic_img(
-                "Camera", final_frame, (0, 0, original_w, original_h)
-            )
+        # ======================================================================
+        # 【新機能】Monitor Window 用の完全な白背景フレームを生成
+        # ======================================================================
+        white_frame = np.full((original_h, original_w, 3), 255, dtype=np.uint8)
 
-            # メッセージ描画 (案内テキスト)
-            cv.rectangle(final_frame, (0, 0), (original_w, 60), (0, 0, 0), -1)
+        # --- 【Monitor Window用】フェーズ別UI切り替えロジック ---
+        if event_detector.state == EventState.ENTERED_ROI:
+            # 【フェーズ1: 動作中】カメラ映像ではなく白背景を使用
+            # 白背景の上部に行動啓発メッセージテキストを直接描画する
             cv.putText(
-                final_frame,
+                white_frame,
                 "PLEASE PERFORM SAFE POSE CHECK (LOOK & POINT)",
                 (30, 40),
                 cv.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 255),
+                0.6,
+                (0, 0, 0),  # 白背景で見えやすくするため黒文字に変更
                 2,
                 cv.LINE_AA,
+            )
+            display_frame.set_dynamic_img(
+                "Camera", white_frame, (0, 0, original_w, original_h)
             )
 
         elif event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
             # 【フェーズ2: 結果・リプレイ確認】
-            # メモリに溜まったリプレイバッファがあれば、それをパラパラマンガ風に再生
             if len(event_detector.replay_buffer) > 0:
                 idx = event_detector.replay_index % len(event_detector.replay_buffer)
                 replay_frame = event_detector.replay_buffer[idx].copy()
-                event_detector.replay_index += 1  # 次のフレームへ
+                event_detector.replay_index += 1
 
-                # 画面の左側（リプレイ動画領域）にサイズを縮小してリプレイを配置
-                # スコアパネル(280px)を除いた領域にフィットさせる
                 display_w = original_w - 280
                 replay_resized = cv.resize(replay_frame, (display_w, original_h))
 
-                # 「REPLAY」という透かし文字を動画内に入れる
                 cv.putText(
                     replay_resized,
                     "● REPLAY",
@@ -216,7 +199,6 @@ while True:
                     cv.LINE_AA,
                 )
 
-                # 右側のスコアボード用に、横幅を元のサイズ(original_w)に拡張した土台を作る
                 base_frame = np.zeros((original_h, original_w, 3), dtype=np.uint8)
                 base_frame[:, :display_w] = replay_resized
 
@@ -228,51 +210,45 @@ while True:
                     "Camera", final_frame, (0, 0, original_w, original_h)
                 )
         else:
-            # 【フェーズ3: 待機中 / 初期状態】
+            # 【フェーズ3: 待機中 / 初期状態 (NO_PERSON)】
+            # 待機中もカメラ映像を表示させず、完全な白背景にする
             display_frame.set_dynamic_img(
-                "Camera", final_frame, (0, 0, original_w, original_h)
+                "Camera", white_frame, (0, 0, original_w, original_h)
             )
         # ----------------------------------------------------------------------
-
     else:
         display_frame.clear_dynamic_img("Camera")
 
-    # 画面の基本描画（枠線、画像の貼り付けなど）を更新
+    # 画面の基本描画（白背景の上に各種指示画像を貼り付ける処理など）を更新
     display_frame.update_display()
 
-    # === 【追加】判定表示エリアにいる場合のみ、右側にスコアボードを重ね書きする ===
+    # 判定表示エリアにいる場合のみ、右側にスコアボードを重ね書きする
     if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
         display_frame.draw_score_board(event_detector.scores)
-    # ======================================================================
 
-    # 信号機の状態更新ロジック (動作中は画面から隠れているので裏で更新される)
+    # 信号機の状態更新ロジック (裏処理)
     if event_detector.state != EventState.ENTERED_DISPLAY_CHECK_AREA:
         for name, event_data in events.items():
             display_frame.set_traffic_light_state(name, event_data["detected"])
 
-    # 人物の枠と薄暗い効果の設定ロジック (指示フェーズでは無効化してすっきりさせる)
-    if event_detector.state == EventState.ENTERED_ROI:
-        # 動作に集中させるため、バウンディングボックスの描画指定をOFF(None)にする
-        display_frame.set_person_detection_info(None, False)
-        if (
-            event_detector.state == EventState.ENTERED_ROI
-            and event_detector._previous_state != EventState.ENTERED_ROI
-        ):
-            _detect_played_for_look_left = False
-            _detect_played_for_look_right = False
-            _detect_played_for_point_left = False
-            _detect_played_for_point_right = False
-    else:
-        display_frame.set_person_detection_info(None, False)
+    # バウンディングボックス等の初期化
+    display_frame.set_person_detection_info(None, False)
+    if (
+        event_detector.state == EventState.ENTERED_ROI
+        and event_detector._previous_state != EventState.ENTERED_ROI
+    ):
+        _detect_played_for_look_left = False
+        _detect_played_for_look_right = False
+        _detect_played_for_point_left = False
+        _detect_played_for_point_right = False
 
     # カウント値の表示設定
     display_frame.set_counts(confirmed_count, entered_count)
 
-    # --- テキストフィードバックの表示とdetect.mp3再生ロジック ---
     if event_detector.state == EventState.ENTERED_ROI:
-        display_frame.clear_text_feedbacks()  # リアルタイムテキストは表示しない
+        display_frame.clear_text_feedbacks()
 
-    # 音声のトリガーを引くための既存のイベントチェック
+    # 音声フィードバックのトリガー
     for ev_name, flg_attr in [
         ("Look Left", "_detect_played_for_look_left"),
         ("Look Right", "_detect_played_for_look_right"),
@@ -291,7 +267,7 @@ while True:
         cam_w, cam_h = (
             (original_w, original_h) if final_frame is not None else (640, 480)
         )
-        display_w = cam_w - 280  # スコアボードを除いた中央にスタンプを出す
+        display_w = cam_w - 280
         if last_session_all_items_confirmed:
             display_frame.set_result_image(
                 _ok_img,
@@ -322,20 +298,20 @@ while True:
             _ok_played_for_current_ok = False
 
     elif event_detector.state == EventState.ENTERED_ROI:
-        # 【追加】ユーザーがエリア内にいる（動作中）時、Action.png を中央に表示
+        # ユーザーがエリア内にいる（動作中）時、白背景の中央に Action.png を表示
         if _action_img is not None and final_frame is not None:
             display_frame.set_result_image(
                 _action_img,
                 (
-                    (original_w - _action_img_display_width) // 2,  # 中央揃えX
-                    (original_h - _action_img_display_height) // 2,  # 中央揃えY
+                    (original_w - _action_img_display_width) // 2,
+                    (original_h - _action_img_display_height) // 2,
                     _action_img_display_width,
                     _action_img_display_height,
                 ),
             )
 
     elif event_detector.state == EventState.NO_PERSON:
-        # ユーザーがいない待機状態の時、00.ankn.png を中央に表示
+        # ユーザーがいない待機状態の時、白背景の中央に 00.ankn.png を表示
         if _ankn_img is not None and final_frame is not None:
             display_frame.set_result_image(
                 _ankn_img,
@@ -347,18 +323,17 @@ while True:
                 ),
             )
     else:
-        # リセットエリアなど、その他の状態では画像を非表示にする
         display_frame.set_result_image(None)
         _buzzer_played_for_current_ng = False
         _ok_played_for_current_ok = False
 
-    # --- リセットエリアに入った場合の処理 ---
+    # リセットエリア侵入時の処理
     if event_detector.state == EventState.EXITED_ROI:
         display_frame.set_person_detection_info(None, False)
         display_frame.clear_text_feedbacks()
         display_frame.set_result_image(None)
         display_frame.reset_traffic_lights()
-        event_detector.reset()  # スコアと動画バッファのクリア
+        event_detector.reset()
         _buzzer_played_for_current_ng = False
         _ok_played_for_current_ok = False
         _detect_played_for_look_left = False
@@ -366,9 +341,13 @@ while True:
         _detect_played_for_point_left = False
         _detect_played_for_point_right = False
 
-    # OpenCVのウィンドウに最終描画フレームを反映
+    # Monitor Window への描画 (白背景 + 指示画像)
     if display_frame.display_frame is not None:
-        cv.imshow(f"Video", display_frame.display_frame)
+        cv.imshow("Monitor Window", display_frame.display_frame)
+
+    # Manager Window への描画 (カメラ映像 + 骨格線 + リアルタイムスコア)
+    if manager_frame is not None:
+        cv.imshow("Manager Window", manager_frame)
 
     key = cv.waitKey(1)
     if key == ord("q"):
@@ -394,10 +373,14 @@ while True:
             record_count += 1
             print("録画を終了しました")
     elif key == ord("f"):
-        current_prop = cv.getWindowProperty("Video", cv.WND_PROP_FULLSCREEN)
+        current_prop = cv.getWindowProperty("Monitor Window", cv.WND_PROP_FULLSCREEN)
         if current_prop == cv.WINDOW_FULLSCREEN:
-            cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_NORMAL)
+            cv.setWindowProperty(
+                "Monitor Window", cv.WND_PROP_FULLSCREEN, cv.WINDOW_NORMAL
+            )
         else:
-            cv.setWindowProperty("Video", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN)
+            cv.setWindowProperty(
+                "Monitor Window", cv.WND_PROP_FULLSCREEN, cv.WINDOW_FULLSCREEN
+            )
 
 cv.destroyAllWindows()
