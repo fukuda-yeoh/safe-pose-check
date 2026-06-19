@@ -123,7 +123,7 @@ _notice_img_display_height = 400
 _display_area_notice_start_time = 0.0
 _is_notice_active = False
 _is_replay_active = False
-_has_saved_exit_status = False  # 進入時のステータス確定フラグ
+_has_saved_exit_status = False
 _session_all_items_confirmed = False
 
 _buzzer_played_for_current_ng = False
@@ -153,17 +153,13 @@ while True:
         original_h, original_w, _ = final_frame.shape
         white_frame = np.full((original_h, original_w, 3), 255, dtype=np.uint8)
 
-        # --- 【Monitor Window用】エリア定義ベースの表示切り替えロジック ---
-
-        # 1. 判定結果表示エリア（DISPLAY_CHECK_AREA）にいる時
+        # --- 【Monitor Window用】表示切り替えロジック ---
         if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
-            # 【進入の瞬間】案内タイマーの起動と、達成状況の確定
             if not _is_notice_active and not _is_replay_active:
                 _is_notice_active = True
                 _display_area_notice_start_time = time.time()
                 event_detector.replay_index = 0
 
-                # 進入した時点の指差し確認の成否フラグをセッション用に保持
                 _session_all_items_confirmed = (
                     all(ev["detected"] for ev in events.values()) if events else False
                 )
@@ -171,17 +167,14 @@ while True:
                     event_detector.fail_count += 1
                     _has_saved_exit_status = True
 
-            # パターンA：案内表示中の2秒間
             if _is_notice_active:
                 display_frame.set_dynamic_img(
                     "Camera", white_frame, (0, 0, original_w, original_h)
                 )
-
                 if time.time() - _display_area_notice_start_time >= 2.0:
                     _is_notice_active = False
                     _is_replay_active = True
 
-            # パターンB：案内終了後のフルスクリーンリプレイ再生
             elif _is_replay_active:
                 if len(event_detector.replay_buffer) > 0:
                     idx = event_detector.replay_index % len(
@@ -190,16 +183,6 @@ while True:
                     replay_frame = event_detector.replay_buffer[idx].copy()
                     event_detector.replay_index += 1
 
-                    cv.putText(
-                        replay_frame,
-                        "● REPLAY",
-                        (20, 40),
-                        cv.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (0, 0, 255),
-                        2,
-                        cv.LINE_AA,
-                    )
                     display_frame.set_dynamic_img(
                         "Camera", replay_frame, (0, 0, original_w, original_h)
                     )
@@ -208,55 +191,32 @@ while True:
                         "Camera", final_frame, (0, 0, original_w, original_h)
                     )
 
-        # 2. 判定エリア（ROI）内で確認動作中の時
         elif event_detector.state == EventState.ENTERED_ROI:
             _is_notice_active = False
             _is_replay_active = False
             _has_saved_exit_status = False
 
-            cv.putText(
-                white_frame,
-                "PLEASE PERFORM SAFE POSE CHECK (LOOK & POINT)",
-                (30, 40),
-                cv.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 0, 0),
-                2,
-                cv.LINE_AA,
-            )
+            # === 【修正】「PLEASE PERFORM...」の文字描画コード（cv.putText）を削除 ===
+            # (白背景画像の上に何も書き込まず、そのまま描画エンジンにセットします)
             display_frame.set_dynamic_img(
                 "Camera", white_frame, (0, 0, original_w, original_h)
             )
 
-        # 3. 待機中またはそれ以外のエリア（カメラの前に誰もいない状態など）
         else:
-            # ==================================================================
-            # 【重要変更】エリアから退出した（NO_PERSON）瞬間、完全自動初期化
-            # ==================================================================
             _is_notice_active = False
             _is_replay_active = False
             _has_saved_exit_status = False
             _ok_played_for_current_ok = False
             _buzzer_played_for_current_ng = False
 
-            event_detector.reset()  # スコア、イベント検出フラグ、動画バッファの完全初期化
-            display_frame.reset_traffic_lights()
-
+            event_detector.reset()
             display_frame.set_dynamic_img(
                 "Camera", white_frame, (0, 0, original_w, original_h)
             )
-            # ==================================================================
-
     else:
         display_frame.clear_dynamic_img("Camera")
 
     display_frame.update_display()
-
-    # 信号機の状態更新（動作中のみ裏で動作）
-    if event_detector.state == EventState.ENTERED_ROI:
-        for name, event_data in events.items():
-            display_frame.set_traffic_light_state(name, event_data["detected"])
-
     display_frame.set_person_detection_info(None, False)
 
     # 音声フィードバック
@@ -279,8 +239,6 @@ while True:
         _detect_played_for_point_left = False
         _detect_played_for_point_right = False
 
-    display_frame.set_counts(confirmed_count, event_detector.fail_count)
-
     if event_detector.state == EventState.ENTERED_ROI:
         display_frame.clear_text_feedbacks()
 
@@ -298,30 +256,14 @@ while True:
                     ),
                 )
         elif _is_replay_active:
+            display_frame.set_result_image(None)
+
             if _session_all_items_confirmed:
-                display_frame.set_result_image(
-                    _ok_img,
-                    (
-                        (original_w - _result_img_display_width) // 2,
-                        (original_h - _result_img_display_height) // 2,
-                        _result_img_display_width,
-                        _result_img_display_height,
-                    ),
-                )
                 if not _ok_played_for_current_ok:
                     play_ok_sound()
                     _ok_played_for_current_ok = True
                 _buzzer_played_for_current_ng = False
             else:
-                display_frame.set_result_image(
-                    _ng_img,
-                    (
-                        (original_w - _result_img_display_width) // 2,
-                        (original_h - _result_img_display_height) // 2,
-                        _result_img_display_width,
-                        _result_img_display_height,
-                    ),
-                )
                 if not _buzzer_played_for_current_ng:
                     play_buzzer_sound()
                     _buzzer_played_for_current_ng = True

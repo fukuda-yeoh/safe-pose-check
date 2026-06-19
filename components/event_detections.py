@@ -27,7 +27,7 @@ class EventDetector:
         self,
         landmark_labels,
         roi_points,
-        clear_roi_points=None,  # 互換性のために残す（使用しない）
+        clear_roi_points=None,
         display_check_area_points=None,
     ):
         self.labels = landmark_labels
@@ -277,6 +277,7 @@ class EventDetector:
                     event["display_pos"] = None
 
         if frame is not None:
+            f_h, f_w, _ = frame.shape
             frame = self.draw_roi(frame)
             frame = self.draw_display_check_area(frame)
 
@@ -286,47 +287,64 @@ class EventDetector:
                     frame, landmark_array, "right elbow", forearm_vec
                 )
 
-            # Manager画面に項目名とリアルタイム点数を常時書き込む
-            current_ll = calculate_score_l(head_vec_angle, 25, 90)
-            current_lr = calculate_score_r(head_vec_angle, 90, 155)
-            current_pl = (
-                calculate_score_l(forearm_vec_angle, 25, 90) if arm_high > 0.6 else 0
-            )
-            current_pr = (
-                calculate_score_r(forearm_vec_angle, 90, 155) if arm_high > 0.6 else 0
-            )
+            # ==================================================================
+            # 【レイアウト修正】黒背景付き・点数連動カラーの四隅スコア表示
+            # ==================================================================
+            score_ll = self.scores.get("LL_score", 0)
+            score_lr = self.scores.get("LR_score", 0)
+            score_pl = self.scores.get("PL_score", 0)
+            score_pr = self.scores.get("PR_score", 0)
 
-            manager_texts = [
-                "[ REALTIME SCORE ]",
-                f"Look Left:   {current_ll} pts",
-                f"Look Right:  {current_lr} pts",
-                f"Point Left:  {current_pl} pts",
-                f"Point Right: {current_pr} pts",
+            # 各隅の表示内容、描画位置、および対応するスコア値の定義
+            quadrant_items = [
+                # 1. 左上: Look Left
+                (f"Look Left: {score_ll} pts", (15, 35), score_ll, "left"),
+                # 2. 右上: Look Right
+                (f"Look Right: {score_lr} pts", (f_w - 215, 35), score_lr, "right"),
+                # 3. 左下: Point Left
+                (f"Point Left: {score_pl} pts", (15, f_h - 20), score_pl, "left"),
+                # 4. 右下: Point Right
+                (
+                    f"Point Right: {score_pr} pts",
+                    (f_w - 215, f_h - 20),
+                    score_pr,
+                    "right",
+                ),
             ]
 
-            tx, ty = 20, 40
-            for text in manager_texts:
-                cv.putText(
-                    frame,
-                    text,
-                    (tx + 1, ty + 1),
-                    cv.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 0, 0),
-                    2,
-                    cv.LINE_AA,
+            for text, pos, score, align in quadrant_items:
+                # 80点以上は緑文字(BGR: 0,255,0)、80点未満は赤文字(BGR: 0,0,255)
+                color = (0, 255, 0) if score >= 80 else (0, 0, 255)
+
+                # 文字列のピクセルサイズを取得して背景ボックスの大きさを自動計算
+                (text_w, text_h), baseline = cv.getTextSize(
+                    text, cv.FONT_HERSHEY_SIMPLEX, 0.53, 1
                 )
+
+                box_x1 = pos[0] - 8
+                box_y1 = pos[1] - text_h - 8
+                box_x2 = pos[0] + text_w + 8
+                box_y2 = pos[1] + 6
+
+                # テキストの背景に黒い半透明（あるいは完全な黒）のボックスを敷く
+                cv.rectangle(
+                    frame, (box_x1, box_y1), (box_x2, box_y2), (15, 15, 15), -1
+                )
+                # ボックスに薄いグレーの枠線を引いてデザインをさらに引き締める
+                cv.rectangle(frame, (box_x1, box_y1), (box_x2, box_y2), (60, 60, 60), 1)
+
+                # メインのカラーテキストを描画
                 cv.putText(
                     frame,
                     text,
-                    (tx, ty),
+                    pos,
                     cv.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (255, 255, 255),
+                    0.53,
+                    color,
                     1,
                     cv.LINE_AA,
                 )
-                ty += 22
+            # ==================================================================
 
         return params, frame, self.events
 
