@@ -59,7 +59,7 @@ class EventDetector:
         }
 
         # リプレイ動画用バッファ (最大150フレーム=約5秒分)
-        self.replay_buffer = deque(maxlen=150)
+        self.replay_buffer = deque(maxlen=1500)
         self.replay_index = 0
 
         self.person_bbox = None
