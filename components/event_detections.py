@@ -8,10 +8,10 @@ import numpy as np
 
 from funcs.calc_score import calculate_score_l, calculate_score_r
 from funcs.landmark_funcs import (
+    get_landmark_labels,
     get_pos_array,
     draw_arrow_on_image,
     draw_roi_on_image,
-    draw_clear_roi_on_image,
     landmarks_to_array,
 )
 
@@ -19,8 +19,7 @@ from funcs.landmark_funcs import (
 class EventState(Enum):
     NO_PERSON = 1
     ENTERED_ROI = 2
-    EXITED_ROI = 3
-    ENTERED_DISPLAY_CHECK_AREA = 4
+    ENTERED_DISPLAY_CHECK_AREA = 3
 
 
 class EventDetector:
@@ -28,12 +27,11 @@ class EventDetector:
         self,
         landmark_labels,
         roi_points,
-        clear_roi_points,
-        display_check_area_points,
+        clear_roi_points=None,  # 互換性のために残す（使用しない）
+        display_check_area_points=None,
     ):
         self.labels = landmark_labels
         self.roi_points = np.array(roi_points, dtype=np.float32)
-        self.clear_roi_points = np.array(clear_roi_points, dtype=np.float32)
         self.display_check_area_points = np.array(
             display_check_area_points, dtype=np.float32
         )
@@ -185,14 +183,14 @@ class EventDetector:
 
                 self.update_scores(params)
 
+                # 骨格線・リアルタイム点数が完全に描き込まれたフレームをバッファに記憶（判定エリアのみ）
                 if self.state == EventState.ENTERED_ROI:
-                    self.replay_buffer.append(frame.copy())
+                    self.replay_buffer.append(frame_with_roi.copy())
 
                 display_frame_for_output = frame_with_roi
                 dim_mask_needed = True
             else:
                 frame = self.draw_roi(frame)
-                frame = self.draw_clear_roi(frame)
                 frame = self.draw_display_check_area(frame)
 
                 landmark_array = None
@@ -200,16 +198,7 @@ class EventDetector:
                 events = {}
                 dim_mask_needed = False
 
-                self._last_session_all_items_confirmed = (
-                    self._all_items_confirmed_in_current_session
-                )
-                self._all_items_confirmed_in_current_session = False
-
                 self.state = EventState.NO_PERSON
-                self._previous_state = EventState.NO_PERSON
-                self._confirmed_for_current_entry = False
-                self.reset_events_detected_state()
-
                 display_frame_for_output = frame
 
             self.out_queue.put(
@@ -229,7 +218,6 @@ class EventDetector:
 
     def run(self, landmark_array, frame=None):
         in_roi = self.feet_inside_roi(landmark_array)
-        in_clear_roi = self.feet_inside_clear_roi(landmark_array)
         in_display_check_area = self.feet_inside_display_check_area(landmark_array)
 
         self._previous_state = self.state
@@ -239,33 +227,11 @@ class EventDetector:
             if self._previous_state != EventState.ENTERED_ROI:
                 self._confirmed_for_current_entry = False
                 self._all_items_confirmed_in_current_session = False
-        elif in_clear_roi:
-            self._last_session_all_items_confirmed = (
-                self._all_items_confirmed_in_current_session
-            )
-            self._all_items_confirmed_in_current_session = False
-            self.state = EventState.EXITED_ROI
-            self._confirmed_for_current_entry = False
         elif in_display_check_area:
-            if self._previous_state != EventState.ENTERED_DISPLAY_CHECK_AREA:
-                self._last_session_all_items_confirmed = (
-                    self._all_items_confirmed_in_current_session
-                )
-                if not self._all_items_confirmed_in_current_session:
-                    self.fail_count += 1
-                self.reset_event_detected_flags_only()
-
             self.state = EventState.ENTERED_DISPLAY_CHECK_AREA
         else:
-            if self._previous_state != EventState.NO_PERSON:
-                self._last_session_all_items_confirmed = (
-                    self._all_items_confirmed_in_current_session
-                )
-                self._all_items_confirmed_in_current_session = False
-
             self.state = EventState.NO_PERSON
             self._confirmed_for_current_entry = False
-            self.reset_events_detected_state()
 
         eye_vec = self.get_vector(landmark_array, "left eye", "right eye")
         down_vec = self.get_vector(landmark_array, "mid eye", "mid mouth")
@@ -299,10 +265,6 @@ class EventDetector:
                     self.confirmed_count += 1
                     self._confirmed_for_current_entry = True
                     self._all_items_confirmed_in_current_session = True
-        elif self.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
-            pass
-        else:
-            self.reset_events_detected_state()
 
         if landmark_array is not None:
             for name, event in self.events.items():
@@ -316,7 +278,6 @@ class EventDetector:
 
         if frame is not None:
             frame = self.draw_roi(frame)
-            frame = self.draw_clear_roi(frame)
             frame = self.draw_display_check_area(frame)
 
             if landmark_array is not None:
@@ -325,10 +286,7 @@ class EventDetector:
                     frame, landmark_array, "right elbow", forearm_vec
                 )
 
-            # ==================================================================
-            # 【新機能】Manager画面に項目名とリアルタイム点数を常時書き込む
-            # ==================================================================
-            # その瞬間の点数を計算（腕が上がっていない場合は指差しスコアは0点とする）
+            # Manager画面に項目名とリアルタイム点数を常時書き込む
             current_ll = calculate_score_l(head_vec_angle, 25, 90)
             current_lr = calculate_score_r(head_vec_angle, 90, 155)
             current_pl = (
@@ -346,10 +304,8 @@ class EventDetector:
                 f"Point Right: {current_pr} pts",
             ]
 
-            # 画面左上に描画
             tx, ty = 20, 40
             for text in manager_texts:
-                # 視認性を高めるための黒い縁取り文字
                 cv.putText(
                     frame,
                     text,
@@ -360,7 +316,6 @@ class EventDetector:
                     2,
                     cv.LINE_AA,
                 )
-                # メインの白文字
                 cv.putText(
                     frame,
                     text,
@@ -372,7 +327,6 @@ class EventDetector:
                     cv.LINE_AA,
                 )
                 ty += 22
-            # ==================================================================
 
         return params, frame, self.events
 
@@ -439,20 +393,6 @@ class EventDetector:
     def point_inside_roi(self, point):
         return cv.pointPolygonTest(self.roi_points, (point[0], point[1]), False) >= 0
 
-    def feet_inside_clear_roi(self, landmark_array):
-        if landmark_array is None:
-            return False
-        left_ankle = self.get_point(landmark_array, "left ankle")
-        right_ankle = self.get_point(landmark_array, "right ankle")
-        return self.point_inside_clear_roi(left_ankle) and self.point_inside_clear_roi(
-            right_ankle
-        )
-
-    def point_inside_clear_roi(self, point):
-        return (
-            cv.pointPolygonTest(self.clear_roi_points, (point[0], point[1]), False) >= 0
-        )
-
     def feet_inside_display_check_area(self, landmark_array):
         if landmark_array is None:
             return False
@@ -508,13 +448,6 @@ class EventDetector:
     def draw_roi(self, frame):
         if self.roi_points is not None and len(self.roi_points) > 0:
             frame = draw_roi_on_image(frame, self.roi_points)
-        return frame
-
-    def draw_clear_roi(self, frame):
-        if self.clear_roi_points is not None and len(self.clear_roi_points) > 0:
-            frame = draw_clear_roi_on_image(
-                frame, self.clear_roi_points
-            )  # 👈 self.clear_roi_points に修正
         return frame
 
     def draw_display_check_area(self, frame):
