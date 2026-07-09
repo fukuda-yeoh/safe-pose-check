@@ -266,9 +266,6 @@ while True:
                 cv.LINE_AA,
             )
 
-        if event_detector.state == EventState.ENTERED_ROI:
-            event_detector.replay_buffer.append(manager_frame.copy())
-
         # --- 【Monitor Window用】表示切り替えロジック ---
         if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
             if not _is_notice_active and not _is_replay_active:
