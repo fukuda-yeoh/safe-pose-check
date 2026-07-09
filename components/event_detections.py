@@ -1,3 +1,5 @@
+# components/event_detections.py
+
 import time
 from enum import Enum
 from queue import Queue
@@ -59,7 +61,7 @@ class EventDetector:
         }
 
         # リプレイ動画用バッファ (最大150フレーム=約5秒分)
-        self.replay_buffer = deque(maxlen=1500)
+        self.replay_buffer = deque(maxlen=150)
         self.replay_index = 0
 
         self.person_bbox = None
@@ -107,9 +109,9 @@ class EventDetector:
                 "display_pos": None,
             },
             "Point Left": {
-                "param": "arm_high",
-                "landmark": "right wrist",
-                "conditional": "param > 0.6 and 50 > params['forearm'] > 0",
+                "param": "forearm",
+                "landmark": "right wrist",  # ここはアクティブアーム判別時に動的変更されます
+                "conditional": "params['arm_high'] > 0.6 and 50 > param > 0",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -117,9 +119,9 @@ class EventDetector:
                 "display_pos": None,
             },
             "Point Right": {
-                "param": "arm_high",
-                "landmark": "right wrist",
-                "conditional": "param > 0.6 and params['forearm'] > 130",
+                "param": "forearm",
+                "landmark": "right wrist",  # ここはアクティブアーム判別時に動的変更されます
+                "conditional": "params['arm_high'] > 0.6 and param > 130",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -139,6 +141,7 @@ class EventDetector:
             self.scores["LR_score"], calculate_score_r(params["head"], 90, 155)
         )
 
+        # 左右どちらかの腕が十分高く上がっていればスコアをサンプリング
         if params["arm_high"] > 0.6:
             self.scores["PL_score"] = max(
                 self.scores["PL_score"], calculate_score_l(params["forearm"], 25, 90)
@@ -152,10 +155,14 @@ class EventDetector:
             result, timestamp, frame = in_queue.get()
             person_bbox_coords = None
             dim_mask_needed = False
+            world_landmarks = None
 
             if result.pose_landmarks and len(result.pose_landmarks) > 0:
                 person_pose_landmarks = result.pose_landmarks[0]
                 landmark_array = landmarks_to_array(person_pose_landmarks)
+
+                if result.pose_world_landmarks and len(result.pose_world_landmarks) > 0:
+                    world_landmarks = result.pose_world_landmarks[0]
 
                 min_x = min([lmk.x for lmk in person_pose_landmarks])
                 max_x = max([lmk.x for lmk in person_pose_landmarks])
@@ -183,9 +190,8 @@ class EventDetector:
 
                 self.update_scores(params)
 
-                # 骨格線・リアルタイム点数が完全に描き込まれたフレームをバッファに記憶（判定エリアのみ）
-                if self.state == EventState.ENTERED_ROI:
-                    self.replay_buffer.append(frame_with_roi.copy())
+                # if self.state == EventState.ENTERED_ROI:
+                # self.replay_buffer.append(frame_with_roi.copy())
 
                 display_frame_for_output = frame_with_roi
                 dim_mask_needed = True
@@ -213,6 +219,7 @@ class EventDetector:
                     self.confirmed_count,
                     self.fail_count,
                     self._last_session_all_items_confirmed,
+                    world_landmarks,
                 )
             )
 
@@ -233,19 +240,54 @@ class EventDetector:
             self.state = EventState.NO_PERSON
             self._confirmed_for_current_entry = False
 
+        # 視線角度の計算
         eye_vec = self.get_vector(landmark_array, "left eye", "right eye")
         down_vec = self.get_vector(landmark_array, "mid eye", "mid mouth")
 
         head_vec = self.cross_vector(eye_vec, down_vec)
         head_vec_angle = self.get_angle_vector(head_vec)
 
-        forearm_vec = self.get_vector(landmark_array, "right elbow", "right wrist")
-        forearm_vec_angle = self.get_angle_vector(forearm_vec)
+        # ======================================================================
+        # 🛠️【大改造】左右利き自動両対応ロジックの組み込み
+        # 左右の手首のY座標を比較し、より高く上がっている方の前腕ベクトルを採点対象にする
+        # ======================================================================
+        r_wrist_pos = self.get_point(landmark_array, "right wrist")
+        l_wrist_pos = self.get_point(landmark_array, "left wrist")
 
         high = self.get_high(landmark_array, "mid ankle", "nose")
-        arm_high = self.get_high(landmark_array, "mid ankle", "right wrist") / (
-            high if high != 0 else 1
-        )
+        high_denominator = high if high != 0 else 1
+
+        # 画像座標系は上方向がマイナスなので、Y値が小さい方が「高い」
+        if l_wrist_pos[1] < r_wrist_pos[1]:
+            # 左手の方が高く上がっている（左利きアクション）
+            forearm_vec = self.get_vector(landmark_array, "left elbow", "left wrist")
+            arm_high = (
+                self.get_high(landmark_array, "mid ankle", "left wrist")
+                / high_denominator
+            )
+
+            # クロップターゲットや表示ランドマークの宛先を動的に左手に書き換える
+            self.events["Point Left"]["landmark"] = "left wrist"
+            self.events["Point Left"]["display_landmark"] = "left wrist"
+            self.events["Point Right"]["landmark"] = "left wrist"
+            self.events["Point Right"]["display_landmark"] = "left wrist"
+            active_elbow_label = "left elbow"
+        else:
+            # 右手の方が高く上がっている（右利きアクション）
+            forearm_vec = self.get_vector(landmark_array, "right elbow", "right wrist")
+            arm_high = (
+                self.get_high(landmark_array, "mid ankle", "right wrist")
+                / high_denominator
+            )
+
+            self.events["Point Left"]["landmark"] = "right wrist"
+            self.events["Point Left"]["display_landmark"] = "right wrist"
+            self.events["Point Right"]["landmark"] = "right wrist"
+            self.events["Point Right"]["display_landmark"] = "right wrist"
+            active_elbow_label = "right elbow"
+
+        forearm_vec_angle = self.get_angle_vector(forearm_vec)
+        # ======================================================================
 
         params = {
             "in_roi": in_roi,
@@ -277,74 +319,17 @@ class EventDetector:
                     event["display_pos"] = None
 
         if frame is not None:
-            f_h, f_w, _ = frame.shape
             frame = self.draw_roi(frame)
             frame = self.draw_display_check_area(frame)
 
-            if landmark_array is not None:
-                frame = self.draw_vector(frame, landmark_array, "nose", head_vec * 0.2)
-                frame = self.draw_vector(
-                    frame, landmark_array, "right elbow", forearm_vec
-                )
-
             # ==================================================================
-            # 【レイアウト修正】黒背景付き・点数連動カラーの四隅スコア表示
+            # ❌ 【削除】実映像への顔と腕のベクトル矢印描画（draw_vector）を消去しました
             # ==================================================================
-            score_ll = self.scores.get("LL_score", 0)
-            score_lr = self.scores.get("LR_score", 0)
-            score_pl = self.scores.get("PL_score", 0)
-            score_pr = self.scores.get("PR_score", 0)
-
-            # 各隅の表示内容、描画位置、および対応するスコア値の定義
-            quadrant_items = [
-                # 1. 左上: Look Left
-                (f"Look Left: {score_ll} pts", (15, 35), score_ll, "left"),
-                # 2. 右上: Look Right
-                (f"Look Right: {score_lr} pts", (f_w - 215, 35), score_lr, "right"),
-                # 3. 左下: Point Left
-                (f"Point Left: {score_pl} pts", (15, f_h - 20), score_pl, "left"),
-                # 4. 右下: Point Right
-                (
-                    f"Point Right: {score_pr} pts",
-                    (f_w - 215, f_h - 20),
-                    score_pr,
-                    "right",
-                ),
-            ]
-
-            for text, pos, score, align in quadrant_items:
-                # 80点以上は緑文字(BGR: 0,255,0)、80点未満は赤文字(BGR: 0,0,255)
-                color = (0, 255, 0) if score >= 80 else (0, 0, 255)
-
-                # 文字列のピクセルサイズを取得して背景ボックスの大きさを自動計算
-                (text_w, text_h), baseline = cv.getTextSize(
-                    text, cv.FONT_HERSHEY_SIMPLEX, 0.53, 1
-                )
-
-                box_x1 = pos[0] - 8
-                box_y1 = pos[1] - text_h - 8
-                box_x2 = pos[0] + text_w + 8
-                box_y2 = pos[1] + 6
-
-                # テキストの背景に黒い半透明（あるいは完全な黒）のボックスを敷く
-                cv.rectangle(
-                    frame, (box_x1, box_y1), (box_x2, box_y2), (15, 15, 15), -1
-                )
-                # ボックスに薄いグレーの枠線を引いてデザインをさらに引き締める
-                cv.rectangle(frame, (box_x1, box_y1), (box_x2, box_y2), (60, 60, 60), 1)
-
-                # メインのカラーテキストを描画
-                cv.putText(
-                    frame,
-                    text,
-                    pos,
-                    cv.FONT_HERSHEY_SIMPLEX,
-                    0.53,
-                    color,
-                    1,
-                    cv.LINE_AA,
-                )
-            # ==================================================================
+            # if landmark_array is not None:
+            #     frame = self.draw_vector(frame, landmark_array, "nose", head_vec * 0.2)
+            #     frame = self.draw_vector(
+            #         frame, landmark_array, active_elbow_label, forearm_vec
+            #     )
 
         return params, frame, self.events
 

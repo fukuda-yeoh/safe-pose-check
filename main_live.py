@@ -23,16 +23,16 @@ from components import (
     play_ok_sound,
     play_detect_sound,
 )
+from components.skeleton_visualizer import SkeletonVisualizer
+
 from defs import project_root
 from funcs.landmark_funcs import (
     get_landmark_labels,
 )
 
-# 設定ファイルのパスを定義
 CONFIG_DIR = project_root() / "config"
 CONFIG_FILE = CONFIG_DIR / "roi_config.json"
 
-# カメラ行列と歪み係数
 camera_matrix = np.array(
     [
         [635.8283543606941, 0.0, 253.67538054709416],
@@ -52,7 +52,6 @@ dist_coeffs = np.array(
     dtype=np.float32,
 )
 
-# カメラを開く
 model_path = project_root() / "models" / "pose_landmarker_full.task"
 landmarks_def_path = project_root() / "models" / "landmarks.txt"
 save_dir = project_root() / "record"
@@ -63,10 +62,7 @@ recognition_thread = RecognitionThread(model_path, camera_thread.queue)
 
 landmark_labels = get_landmark_labels(landmarks_def_path)
 recorder = RecordWorker(save_dir, save_dir, landmark_labels, "frame")
-record_count = 1
-is_recording = False
 
-# --- エリア定義ファイルの読み込み ---
 roi_points = []
 display_check_area_points = []
 
@@ -89,15 +85,18 @@ detector_thread = Thread(
 )
 
 display_frame = DisplayFrame()
+visualizer = SkeletonVisualizer(width=640, height=480)
+
+has_left_high_ok = False
+has_right_high_ok = False
+
 recognition_thread.start()
 detector_thread.start()
 camera_thread.start()
 
-# ウィンドウの定義
 cv.namedWindow("Monitor Window", cv.WINDOW_NORMAL)
 cv.namedWindow("Manager Window", cv.WINDOW_NORMAL)
 
-# --- 各種画像を読み込む ---
 ok_img_path = project_root() / "OK.png"
 ng_img_path = project_root() / "NG.png"
 ankn_img_path = project_root() / "Area.png"
@@ -119,7 +118,6 @@ _action_img_display_height = 400
 _notice_img_display_width = 400
 _notice_img_display_height = 400
 
-# 判定結果表示エリア内でのシーケンス状態制御変数
 _display_area_notice_start_time = 0.0
 _is_notice_active = False
 _is_replay_active = False
@@ -145,13 +143,131 @@ while True:
         confirmed_count,
         entered_count,
         last_session_all_items_confirmed,
+        world_landmarks,
     ) = event_detector.out_queue.get()
-
-    manager_frame = final_frame.copy() if final_frame is not None else None
 
     if final_frame is not None:
         original_h, original_w, _ = final_frame.shape
         white_frame = np.full((original_h, original_w, 3), 255, dtype=np.uint8)
+
+        # ======================================================================
+        # 【左右対応】左腕・右腕のそれぞれのリアルタイム物理高さを同時計算
+        # ======================================================================
+        is_left_arm_high = False
+        is_right_arm_high = False
+
+        if world_landmarks is not None:
+            # 各関節の取得
+            w_r_shoulder = world_landmarks[12]
+            w_r_hip = world_landmarks[24]
+            w_r_wrist = world_landmarks[16]
+
+            w_l_shoulder = world_landmarks[11]
+            w_l_hip = world_landmarks[23]
+            w_l_wrist = world_landmarks[15]
+
+            # 右側の「肩と腰の中点」のY座標を計算
+            mid_y_r = (w_r_shoulder.y + w_r_hip.y) / 2.0
+            # MediaPipeのY軸は下方向がプラスなので、手首のYが中点より「小さい」＝「高い位置にある」
+            is_right_arm_high = w_r_wrist.y < mid_y_r
+
+            # 左側の「肩と腰の中点」のY座標を計算
+            mid_y_l = (w_l_shoulder.y + w_l_hip.y) / 2.0
+            is_left_arm_high = w_l_wrist.y < mid_y_l
+
+        # エリア進入中（ROI）のみ、いずれかの手首が上がった動作を検知してホールド
+        if event_detector.state == EventState.ENTERED_ROI:
+            if events.get("Point Left", {}).get("detected", False):
+                if is_left_arm_high or is_right_arm_high:
+                    has_left_high_ok = True
+            if events.get("Point Right", {}).get("detected", False):
+                if is_left_arm_high or is_right_arm_high:
+                    has_right_high_ok = True
+        elif event_detector.state == EventState.NO_PERSON:
+            has_left_high_ok = False
+            has_right_high_ok = False
+
+        # 瞬間的な腕上げ状態を両方渡すようにビジュアライザを更新
+        manager_frame = visualizer.generate_frame(
+            world_landmarks, final_frame, is_right_arm_high, is_left_arm_high
+        )
+
+        f_h, f_w, _ = manager_frame.shape
+        one_third_h = visualizer.y_boundary_1
+
+        # ① 上段 (TOP VIEW) の四隅に「角度スコア」を描画
+        score_ll = event_detector.scores.get("LL_score", 0)
+        score_lr = event_detector.scores.get("LR_score", 0)
+        score_pl = event_detector.scores.get("PL_score", 0)
+        score_pr = event_detector.scores.get("PR_score", 0)
+
+        top_quadrant_items = [
+            (f"Look Left: {score_ll} pts", (15, 35), score_ll >= 80),
+            (f"Look Right: {score_lr} pts", (f_w - 215, 35), score_lr >= 80),
+            (f"Point Left: {score_pl} pts", (15, one_third_h - 20), score_pl >= 80),
+            (
+                f"Point Right: {score_pr} pts",
+                (f_w - 215, one_third_h - 20),
+                score_pr >= 80,
+            ),
+        ]
+
+        for text, pos, is_ok in top_quadrant_items:
+            color = (0, 255, 0) if is_ok else (0, 0, 255)
+            (text_w, text_h), _ = cv.getTextSize(text, cv.FONT_HERSHEY_SIMPLEX, 0.53, 1)
+            box_x1, box_y1 = pos[0] - 8, pos[1] - text_h - 8
+            box_x2, box_y2 = pos[0] + text_w + 8, pos[1] + 6
+            cv.rectangle(
+                manager_frame, (box_x1, box_y1), (box_x2, box_y2), (15, 15, 15), -1
+            )
+            cv.rectangle(
+                manager_frame, (box_x1, box_y1), (box_x2, box_y2), (60, 60, 60), 1
+            )
+            cv.putText(
+                manager_frame,
+                text,
+                pos,
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.53,
+                color,
+                1,
+                cv.LINE_AA,
+            )
+
+        # ② 下段 (HIGH VIEW) の左右の四隅に「Left High / Right High」を描画
+        txt_lh = f"Left High: {'OK' if has_left_high_ok else 'LOW'}"
+        txt_rh = f"Right High: {'OK' if has_right_high_ok else 'LOW'}"
+
+        high_view_y2 = f_h - 20
+        high_quadrant_items = [
+            (txt_lh, (15, high_view_y2), has_left_high_ok),
+            (txt_rh, (f_w - 180, high_view_y2), has_right_high_ok),
+        ]
+
+        for text, pos, is_ok in high_quadrant_items:
+            color = (0, 255, 0) if is_ok else (0, 0, 255)
+            (text_w, text_h), _ = cv.getTextSize(text, cv.FONT_HERSHEY_SIMPLEX, 0.53, 1)
+            box_x1, box_y1 = pos[0] - 8, pos[1] - text_h - 8
+            box_x2, box_y2 = pos[0] + text_w + 8, pos[1] + 6
+            cv.rectangle(
+                manager_frame, (box_x1, box_y1), (box_x2, box_y2), (15, 15, 15), -1
+            )
+            cv.rectangle(
+                manager_frame, (box_x1, box_y1), (box_x2, box_y2), (60, 60, 60), 1
+            )
+            cv.putText(
+                manager_frame,
+                text,
+                pos,
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.53,
+                color,
+                1,
+                cv.LINE_AA,
+            )
+
+        if event_detector.state == EventState.ENTERED_ROI:
+            event_detector.replay_buffer.append(manager_frame.copy())
 
         # --- 【Monitor Window用】表示切り替えロジック ---
         if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
@@ -182,7 +298,6 @@ while True:
                     )
                     replay_frame = event_detector.replay_buffer[idx].copy()
                     event_detector.replay_index += 1
-
                     display_frame.set_dynamic_img(
                         "Camera", replay_frame, (0, 0, original_w, original_h)
                     )
@@ -195,9 +310,6 @@ while True:
             _is_notice_active = False
             _is_replay_active = False
             _has_saved_exit_status = False
-
-            # === 【修正】「PLEASE PERFORM...」の文字描画コード（cv.putText）を削除 ===
-            # (白背景画像の上に何も書き込まず、そのまま描画エンジンにセットします)
             display_frame.set_dynamic_img(
                 "Camera", white_frame, (0, 0, original_w, original_h)
             )
@@ -208,13 +320,16 @@ while True:
             _has_saved_exit_status = False
             _ok_played_for_current_ok = False
             _buzzer_played_for_current_ng = False
-
             event_detector.reset()
             display_frame.set_dynamic_img(
                 "Camera", white_frame, (0, 0, original_w, original_h)
             )
     else:
         display_frame.clear_dynamic_img("Camera")
+        raw_cam = (
+            camera_thread.queue.get()[2] if not camera_thread.queue.empty() else None
+        )
+        manager_frame = visualizer.generate_frame(None, raw_cam, False, False)
 
     display_frame.update_display()
     display_frame.set_person_detection_info(None, False)
@@ -242,7 +357,6 @@ while True:
     if event_detector.state == EventState.ENTERED_ROI:
         display_frame.clear_text_feedbacks()
 
-    # --- 各画像（スタンプ・案内画像）の表示処理 ---
     if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
         if _is_notice_active:
             if _notice_img is not None:
@@ -257,7 +371,6 @@ while True:
                 )
         elif _is_replay_active:
             display_frame.set_result_image(None)
-
             if _session_all_items_confirmed:
                 if not _ok_played_for_current_ok:
                     play_ok_sound()
@@ -295,7 +408,6 @@ while True:
     else:
         display_frame.set_result_image(None)
 
-    # 各ウィンドウへの出力
     if display_frame.display_frame is not None:
         cv.imshow("Monitor Window", display_frame.display_frame)
     if manager_frame is not None:

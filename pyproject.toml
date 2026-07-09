@@ -13,5 +13,6 @@ dependencies = [
     "scipy>=1.15.2",
     "screeninfo>=0.8.1",
     "sounddevice>=0.5.1",
+    "vpython>=7.6.5",
     "xarray>=2025.3.1",
 ]
