@@ -61,7 +61,7 @@ class EventDetector:
         }
 
         # リプレイ動画用バッファ (最大150フレーム=約5秒分)
-        self.replay_buffer = deque(maxlen=150)
+        self.replay_buffer = deque(maxlen=1000)
         self.replay_index = 0
 
         self.person_bbox = None
@@ -473,7 +473,7 @@ class EventDetector:
 
     @staticmethod
     def get_angle_vector(vec):
-        roi_vec = np.array([0.34813878, -0.07059366, 0.1838913])
+        roi_vec = np.array([0.39997894, 0.00271511, -0.00307846])
         vec_scale = np.linalg.norm(vec)
         roi_vec_scale = np.linalg.norm(roi_vec)
 

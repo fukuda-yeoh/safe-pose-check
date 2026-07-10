@@ -151,13 +151,12 @@ while True:
         white_frame = np.full((original_h, original_w, 3), 255, dtype=np.uint8)
 
         # ======================================================================
-        # 【左右対応】左腕・右腕のそれぞれのリアルタイム物理高さを同時計算
+        # 【胸の高さ基準】左腕・右腕のそれぞれのリアルタイム物理高さを同時計算
         # ======================================================================
         is_left_arm_high = False
         is_right_arm_high = False
 
         if world_landmarks is not None:
-            # 各関節の取得
             w_r_shoulder = world_landmarks[12]
             w_r_hip = world_landmarks[24]
             w_r_wrist = world_landmarks[16]
@@ -168,7 +167,6 @@ while True:
 
             # 右側の「肩と腰の中点」のY座標を計算
             mid_y_r = (w_r_shoulder.y + w_r_hip.y) / 2.0
-            # MediaPipeのY軸は下方向がプラスなので、手首のYが中点より「小さい」＝「高い位置にある」
             is_right_arm_high = w_r_wrist.y < mid_y_r
 
             # 左側の「肩と腰の中点」のY座標を計算
@@ -266,6 +264,13 @@ while True:
                 cv.LINE_AA,
             )
 
+        # ======================================================================
+        # 💡【復活】すべての描画が完了した manager_frame をリプレイバッファに保存
+        # ======================================================================
+        if event_detector.state == EventState.ENTERED_ROI:
+            event_detector.replay_buffer.append(manager_frame.copy())
+        # ======================================================================
+
         # --- 【Monitor Window用】表示切り替えロジック ---
         if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
             if not _is_notice_active and not _is_replay_active:
@@ -326,7 +331,13 @@ while True:
         raw_cam = (
             camera_thread.queue.get()[2] if not camera_thread.queue.empty() else None
         )
-        manager_frame = visualizer.generate_frame(None, raw_cam, False, False)
+        # 💡 比率変更後のキーワード引数に適合させ、エラーを完全防止
+        manager_frame = visualizer.generate_frame(
+            world_landmarks=None,
+            raw_camera_frame=raw_cam,
+            is_left_height_ok=False,
+            is_right_height_ok=False,
+        )
 
     display_frame.update_display()
     display_frame.set_person_detection_info(None, False)
