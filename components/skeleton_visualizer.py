@@ -9,15 +9,13 @@ class SkeletonVisualizer:
         self.width = width
         self.height = height
 
-        # ======================================================================
-        # 💡【比率変更】0.7 : 1.3 : 1.0 の比率に基づいて各エリアの境界 y 座標を厳密に計算
-        # ======================================================================
-        self.y_boundary_1 = int(height * (0.7 / 3.0))  # 上段と中段の境界 (112px)
-        self.y_boundary_2 = int(height * (2.0 / 3.0))  # 中段と下段の境界 (320px)
+        # 0.7 : 1.3 : 1.0 の比率
+        self.y_boundary_1 = int(height * (0.7 / 3.0))
+        self.y_boundary_2 = int(height * (2.0 / 3.0))
 
-        self.h_top = self.y_boundary_1  # 上段の高さ (112px)
-        self.h_mid = self.y_boundary_2 - self.y_boundary_1  # 中段の高さ (208px)
-        self.h_bot = height - self.y_boundary_2  # 下段の高さ (160px)
+        self.h_top = self.y_boundary_1
+        self.h_mid = self.y_boundary_2 - self.y_boundary_1
+        self.h_bot = height - self.y_boundary_2
 
         # カラー定義
         self.COLOR_BG = (15, 15, 15)
@@ -30,10 +28,13 @@ class SkeletonVisualizer:
         self.COLOR_ACTIVE = (0, 255, 0)
         self.COLOR_NG = (0, 0, 255)
 
+        # フィードバック用のカラー
+        self.COLOR_BLUE_OK = (255, 120, 0)  # 視認性の良いシアン・ブルー系
+        self.COLOR_RED_TEXT = (50, 50, 255)  # 警告用の赤文字
+
     def create_base_canvas(self, raw_camera_frame=None):
         canvas = np.full((self.height, self.width, 3), self.COLOR_BG, dtype=np.uint8)
 
-        # 新しい比率のグリッド線描画
         for x in range(0, self.width, 50):
             cv.line(canvas, (x, 0), (x, self.y_boundary_1), self.COLOR_GRID, 1)
             cv.line(
@@ -45,14 +46,12 @@ class SkeletonVisualizer:
         for y in range(self.y_boundary_2, self.height, 50):
             cv.line(canvas, (0, y), (self.width, y), self.COLOR_GRID, 1)
 
-        # 中段：拡大されたサイズ（高さ208px）に合わせてリサイズして埋め込み
         if raw_camera_frame is not None:
             resized_camera = cv.resize(raw_camera_frame, (self.width, self.h_mid))
             canvas[
                 self.y_boundary_1 : self.y_boundary_2, 0 : self.width
             ] = resized_camera
 
-        # 境界セパレータ線
         cv.line(
             canvas,
             (0, self.y_boundary_1),
@@ -98,15 +97,13 @@ class SkeletonVisualizer:
         return canvas
 
     def draw_top_view(self, canvas, world_landmarks):
-        """上段：TOP VIEW - 座標を「少し上に配置」調整"""
+        """上段：TOP VIEW - 真左（0度）と真右（180度）に合格ガイドラインを水平に描画"""
         if world_landmarks is None:
             return
         try:
             scale = 130
             offset_x = self.width // 2
-
-            # 💡 エリアの高さ縮小に伴い、offset_y を少し上（中央よりさらに浅い位置）へシフト
-            offset_y = self.h_top // 2 + 5
+            offset_y = self.h_top // 2 + 15
 
             def to_pixel(pt):
                 px = int(offset_x + pt.x * scale)
@@ -118,30 +115,40 @@ class SkeletonVisualizer:
             r_shoulder = to_pixel(world_landmarks[12])
             r_elbow = to_pixel(world_landmarks[14])
             r_wrist = to_pixel(world_landmarks[16])
-            l_elbow = world_landmarks[13]
-            l_wrist = world_landmarks[15]
-
-            l_elbow_px = to_pixel(l_elbow)
-            l_wrist_px = to_pixel(l_wrist)
+            l_elbow_px = to_pixel(world_landmarks[13])
+            l_wrist_px = to_pixel(world_landmarks[15])
 
             mid_shoulder_x = (l_shoulder[0] + r_shoulder[0]) // 2
             mid_shoulder_y = (l_shoulder[1] + r_shoulder[1]) // 2
+
+            # 💡 【修正】合格ラインを真左（0度）と真右（180度）に、両肩の中点を結ぶ一本の水平なガイド線として描画
             cv.line(
                 canvas,
-                (mid_shoulder_x, mid_shoulder_y),
-                (mid_shoulder_x, mid_shoulder_y - 40),
+                (mid_shoulder_x - 70, mid_shoulder_y - 10),
+                (mid_shoulder_x + 70, mid_shoulder_y - 10),
                 self.COLOR_GUIDE,
                 1,
                 cv.LINE_AA,
             )
 
+            # 中央の基準正面線（細いグレー線）
+            cv.line(
+                canvas,
+                (mid_shoulder_x, mid_shoulder_y),
+                (mid_shoulder_x, mid_shoulder_y - 40),
+                (50, 50, 50),
+                1,
+                cv.LINE_AA,
+            )
+
+            # 骨格リンク
             cv.line(canvas, l_shoulder, r_shoulder, self.COLOR_BONE, 7, cv.LINE_AA)
             cv.line(canvas, r_shoulder, r_elbow, self.COLOR_BONE, 4, cv.LINE_AA)
             cv.line(canvas, r_elbow, r_wrist, self.COLOR_BONE, 3, cv.LINE_AA)
             cv.line(canvas, l_shoulder, l_elbow_px, self.COLOR_BONE, 4, cv.LINE_AA)
             cv.line(canvas, l_elbow_px, l_wrist_px, self.COLOR_BONE, 3, cv.LINE_AA)
 
-            # 形状固定型の視線三角形
+            # 頭部
             head_radius = 16
             cv.circle(
                 canvas,
@@ -160,10 +167,12 @@ class SkeletonVisualizer:
                 cv.LINE_AA,
             )
 
+            # 形状固定の首振り矢印
             vec_x = nose[0] - mid_shoulder_x
             vec_y = nose[1] - (mid_shoulder_y - 10)
             norm = np.sqrt(vec_x**2 + vec_y**2)
 
+            # 💡 【修正】実際の判定用パラメータ（頭部角度）と同じロジックで不足角度を追従描画
             if norm > 0:
                 vx = vec_x / norm
                 vy = vec_y / norm
@@ -178,6 +187,34 @@ class SkeletonVisualizer:
 
                 poly_points = np.array([p1, p2, arrow_tip], dtype=np.int32)
                 cv.fillPoly(canvas, [poly_points], (0, 255, 0), cv.LINE_AA)
+
+                # 頭部の角度を計算（event_detector内部と100%同期するアルゴリズム）
+                # 正面が 90度
+                current_angle = np.degrees(np.arctan2(-vec_y, vec_x))
+
+                # angleを [0, 180] にクランプ
+                current_angle = np.clip(current_angle, 0.0, 180.0)
+
+                # 左を向こうとしているか、右を向こうとしているかで分岐
+                if current_angle > 90:
+                    # 右向き判定（130度以上が合格。130度までの不足を計算）
+                    diff_deg = int(max(0, 130 - current_angle))
+                else:
+                    # 左向き判定（30度以下が合格。30度までの不足を計算）
+                    diff_deg = int(max(0, current_angle - 30))
+
+                if diff_deg > 0:
+                    # 合格判定の範囲（左30度、右130度）に達していない場合のみ、不足角度を表示
+                    cv.putText(
+                        canvas,
+                        f"{diff_deg} deg",
+                        (mid_shoulder_x + 20, mid_shoulder_y - 20),
+                        cv.FONT_HERSHEY_SIMPLEX,
+                        0.43,
+                        self.COLOR_RED_TEXT,
+                        1,
+                        cv.LINE_AA,
+                    )
 
             for pt in [
                 l_shoulder,
@@ -194,15 +231,13 @@ class SkeletonVisualizer:
     def draw_front_view(
         self, canvas, world_landmarks, is_left_height_ok=False, is_right_height_ok=False
     ):
-        """下段：HIGH VIEW - 座標を「少し下に配置」調整"""
+        """下段：HIGH VIEW - 胸の合格ラインの常時描画 ＆ 手首横への「OK / NG」の表示"""
         if world_landmarks is None:
             return
         try:
             scale = 130
             offset_x = self.width // 2
-
-            # 💡 基準点をさらに下げて、下段枠の下寄りに人型をどっしり配置 (+95 -> +105)
-            offset_y = self.y_boundary_2 + 105
+            offset_y = (self.y_boundary_2) + 105
 
             def to_pixel(pt):
                 px = int(offset_x + pt.x * scale)
@@ -222,31 +257,39 @@ class SkeletonVisualizer:
             r_hip = to_pixel(world_landmarks[24])
             l_hip = to_pixel(world_landmarks[23])
 
+            # HIGH VIEW合格ライン：胸の高さ（肩と腰の中点）
+            mid_y_r_pixel = (r_shoulder[1] + r_hip[1]) // 2
             cv.line(
                 canvas,
-                (0, r_shoulder[1]),
-                (self.width, r_shoulder[1]),
+                (0, mid_y_r_pixel),
+                (self.width, mid_y_r_pixel),
                 self.COLOR_GUIDE,
                 1,
-                cv.LINE_4,
+                cv.LINE_AA,
             )
 
+            # 胴体ポリゴン
             body_poly = np.array([l_shoulder, r_shoulder, r_hip, l_hip], dtype=np.int32)
-            overlay = canvas.copy()
-            cv.fillPoly(overlay, [body_poly], self.COLOR_BODY_FILL, cv.LINE_AA)
-            cv.polylines(overlay, [body_poly], True, self.COLOR_BONE, 2, cv.LINE_AA)
-            cv.addWeighted(overlay, 0.6, canvas, 0.4, 0, canvas)
+            overlay_body = canvas.copy()
+            cv.fillPoly(overlay_body, [body_poly], self.COLOR_BODY_FILL, cv.LINE_AA)
+            cv.polylines(
+                overlay_body, [body_poly], True, self.COLOR_BONE, 2, cv.LINE_AA
+            )
+            cv.addWeighted(overlay_body, 0.6, canvas, 0.4, 0, canvas)
 
+            # 頭部
             cv.circle(canvas, (nose[0], nose[1] - 5), 14, (60, 60, 60), -1, cv.LINE_AA)
             cv.circle(
                 canvas, (nose[0], nose[1] - 5), 14, (120, 120, 120), 1, cv.LINE_AA
             )
 
+            # 体幹
             cv.line(canvas, l_shoulder, r_shoulder, self.COLOR_BONE, 6, cv.LINE_AA)
             cv.line(canvas, r_shoulder, r_hip, self.COLOR_BONE, 4, cv.LINE_AA)
             cv.line(canvas, l_shoulder, l_hip, self.COLOR_BONE, 4, cv.LINE_AA)
             cv.line(canvas, r_hip, l_hip, self.COLOR_BONE, 5, cv.LINE_AA)
 
+            # 実際の腕
             cv.line(canvas, r_shoulder, r_elbow, r_arm_color, 5, cv.LINE_AA)
             cv.line(canvas, r_elbow, r_wrist, r_arm_color, 3, cv.LINE_AA)
             cv.line(canvas, l_shoulder, l_elbow, l_arm_color, 5, cv.LINE_AA)
@@ -263,6 +306,40 @@ class SkeletonVisualizer:
                 l_hip,
             ]:
                 cv.circle(canvas, pt, 3, self.COLOR_JOINT, -1, cv.LINE_AA)
+
+            # 手首横への OK / NG 表示
+            txt_r, color_r = (
+                ("OK", self.COLOR_BLUE_OK)
+                if is_left_height_ok
+                else ("NG", self.COLOR_RED_TEXT)
+            )
+            txt_l, color_l = (
+                ("OK", self.COLOR_BLUE_OK)
+                if is_right_height_ok
+                else ("NG", self.COLOR_RED_TEXT)
+            )
+
+            cv.putText(
+                canvas,
+                txt_r,
+                (r_wrist[0] - 35, r_wrist[1] - 8),
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color_r,
+                1,
+                cv.LINE_AA,
+            )
+            cv.putText(
+                canvas,
+                txt_l,
+                (l_wrist[0] + 12, l_wrist[1] - 8),
+                cv.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                color_l,
+                1,
+                cv.LINE_AA,
+            )
+
         except Exception as e:
             pass
 

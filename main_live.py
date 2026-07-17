@@ -264,12 +264,8 @@ while True:
                 cv.LINE_AA,
             )
 
-        # ======================================================================
-        # 💡【復活】すべての描画が完了した manager_frame をリプレイバッファに保存
-        # ======================================================================
         if event_detector.state == EventState.ENTERED_ROI:
             event_detector.replay_buffer.append(manager_frame.copy())
-        # ======================================================================
 
         # --- 【Monitor Window用】表示切り替えロジック ---
         if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
@@ -277,6 +273,7 @@ while True:
                 _is_notice_active = True
                 _display_area_notice_start_time = time.time()
                 event_detector.replay_index = 0
+                event_detector.replay_index_float = 0.0
 
                 _session_all_items_confirmed = (
                     all(ev["detected"] for ev in events.values()) if events else False
@@ -295,11 +292,14 @@ while True:
 
             elif _is_replay_active:
                 if len(event_detector.replay_buffer) > 0:
-                    idx = event_detector.replay_index % len(
+                    if not hasattr(event_detector, "replay_index_float"):
+                        event_detector.replay_index_float = 0.0
+                    idx = int(event_detector.replay_index_float) % len(
                         event_detector.replay_buffer
                     )
                     replay_frame = event_detector.replay_buffer[idx].copy()
-                    event_detector.replay_index += 1
+                    # indexの増加分を0.5にすることでリプレイ動画のスローモーションを再現
+                    event_detector.replay_index_float += 0.5
                     display_frame.set_dynamic_img(
                         "Camera", replay_frame, (0, 0, original_w, original_h)
                     )

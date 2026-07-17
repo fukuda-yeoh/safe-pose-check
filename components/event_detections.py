@@ -60,7 +60,7 @@ class EventDetector:
             "PR_score": 0,
         }
 
-        # リプレイ動画用バッファ (最大150フレーム=約5秒分)
+        # リプレイ動画用バッファ (最大フレーム)
         self.replay_buffer = deque(maxlen=1000)
         self.replay_index = 0
 
@@ -91,7 +91,7 @@ class EventDetector:
             "Look Left": {
                 "param": "head",
                 "landmark": "nose",
-                "conditional": "30 > param > 0",
+                "conditional": "20 > param > 0",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -101,7 +101,7 @@ class EventDetector:
             "Look Right": {
                 "param": "head",
                 "landmark": "nose",
-                "conditional": "param > 130",
+                "conditional": "param > 160",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -111,7 +111,7 @@ class EventDetector:
             "Point Left": {
                 "param": "forearm",
                 "landmark": "right wrist",  # ここはアクティブアーム判別時に動的変更されます
-                "conditional": "params['arm_high'] > 0.6 and 50 > param > 0",
+                "conditional": "params['arm_high'] > 0.6 and 20 > param > 0",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -121,7 +121,7 @@ class EventDetector:
             "Point Right": {
                 "param": "forearm",
                 "landmark": "right wrist",  # ここはアクティブアーム判別時に動的変更されます
-                "conditional": "params['arm_high'] > 0.6 and param > 130",
+                "conditional": "params['arm_high'] > 0.65 and param > 160",
                 "previous": 0,
                 "crop": None,
                 "detected": False,
@@ -135,19 +135,19 @@ class EventDetector:
             return
 
         self.scores["LL_score"] = max(
-            self.scores["LL_score"], calculate_score_l(params["head"], 25, 90)
+            self.scores["LL_score"], calculate_score_l(params["head"], 10, 90)
         )
         self.scores["LR_score"] = max(
-            self.scores["LR_score"], calculate_score_r(params["head"], 90, 155)
+            self.scores["LR_score"], calculate_score_r(params["head"], 90, 170)
         )
 
         # 左右どちらかの腕が十分高く上がっていればスコアをサンプリング
         if params["arm_high"] > 0.6:
             self.scores["PL_score"] = max(
-                self.scores["PL_score"], calculate_score_l(params["forearm"], 25, 90)
+                self.scores["PL_score"], calculate_score_l(params["forearm"], 15, 90)
             )
             self.scores["PR_score"] = max(
-                self.scores["PR_score"], calculate_score_r(params["forearm"], 90, 155)
+                self.scores["PR_score"], calculate_score_r(params["forearm"], 90, 170)
             )
 
     def run_in_thread(self, in_queue):
@@ -473,7 +473,7 @@ class EventDetector:
 
     @staticmethod
     def get_angle_vector(vec):
-        roi_vec = np.array([0.39997894, 0.00271511, -0.00307846])
+        roi_vec = np.array([0.39993894, 0.00629199, -0.00303984])
         vec_scale = np.linalg.norm(vec)
         roi_vec_scale = np.linalg.norm(roi_vec)
 
