@@ -119,6 +119,7 @@ class SkeletonVisualizer:
                 )
                 cv.addWeighted(overlay_body, 0.6, canvas, 0.4, 0, canvas)
 
+            # 頭部（丸）を描画
             cv.circle(canvas, (nose[0], nose[1] - 5), 13, (60, 60, 60), -1, cv.LINE_AA)
             cv.circle(
                 canvas, (nose[0], nose[1] - 5), 13, (120, 120, 120), 1, cv.LINE_AA
@@ -199,17 +200,24 @@ class SkeletonVisualizer:
                 if norm > 0:
                     vx = vec_x / norm
                     vz = vec_z / norm
-                    arrow_tip = (
-                        int(mid_shoulder_x + vx * 25),
-                        int(mid_shoulder_y - vz * 25),
-                    )
-                    perp_x = vz * 8
-                    perp_z = vx * 8
-                    p1 = (int(mid_shoulder_x + perp_x), int(mid_shoulder_y + perp_z))
-                    p2 = (int(mid_shoulder_x - perp_x), int(mid_shoulder_y - perp_z))
 
-                    poly_points = np.array([p1, p2, arrow_tip], dtype=np.int32)
-                    cv.fillPoly(canvas, [poly_points], (0, 255, 0), cv.LINE_AA)
+                    # 💡 【ズレの完全解消】鼻の投影座標(nose)を起点とし、顔の丸のフチから外側へ矢印を伸ばす
+                    start_pt = (int(nose[0]), int(nose[1] - 5))
+                    end_pt = (
+                        int(start_pt[0] + vx * 25),
+                        int(start_pt[1] - vz * 25),
+                    )
+
+                    # cv.arrowedLine で顔の輪郭先端から真直ぐ外側へ伸びる矢印を描画
+                    cv.arrowedLine(
+                        canvas,
+                        start_pt,
+                        end_pt,
+                        (0, 255, 0),
+                        2,
+                        tipLength=0.35,
+                        line_type=cv.LINE_AA,
+                    )
 
                     current_angle = np.degrees(np.arctan2(-vec_z, vec_x))
                     current_angle = np.clip(current_angle, 0.0, 180.0)
@@ -231,7 +239,7 @@ class SkeletonVisualizer:
                             cv.LINE_AA,
                         )
 
-                # 💡 【復活】真上視点時の4項目スコアボックスの描画
+                # スコアボックスの描画
                 if scores is not None:
                     score_ll = scores.get("LL_score", 0)
                     score_lr = scores.get("LR_score", 0)
