@@ -141,8 +141,12 @@ transition_start_time = 0.0
 
 replay_world_landmarks_buffer = []
 
-peak_idx_first = -1
-peak_idx_second = -1
+arm_peak_idx_first = -1
+arm_peak_idx_second = -1
+
+score_peak_idx_left = -1
+score_peak_idx_right = -1
+
 is_pausing_at_peak = False
 pause_start_time = 0.0
 paused_peaks_hit = set()
@@ -221,17 +225,10 @@ def smooth_landmarks_buffer(buffer, cutoff_freq=3.0, fs=30.0):
 
 
 def find_arm_height_peak_indices(buffer):
-    """
-    💡 【改修】腕の高さの時系列変化に基づき、
-    ・最初からデータを辿って最初に見つかる腕上げの山（1回目の動作ピーク）
-    ・最後からデータを遡って最初に見つかる腕上げの山（2回目の動作ピーク）
-    を検索するロジック
-    """
     n_frames = len(buffer)
     if n_frames < 10:
         return -1, -1
 
-    # 各フレームにおける「左右の手首のうち、より高い方（Y座標が小さい方）のY値」を取り出す
     wrist_y_list = []
     for item in buffer:
         lmks = item[0]
@@ -239,26 +236,41 @@ def find_arm_height_peak_indices(buffer):
             min_y = min(lmks[15].y, lmks[16].y)
             wrist_y_list.append(min_y)
         else:
-            wrist_y_list.append(1.0)  # 検出なしの場合は底面扱い
+            wrist_y_list.append(1.0)
 
     wrist_y = np.array(wrist_y_list)
 
-    # 1. 前半部分（最初から順方向）で最初の「腕上げの山（Y座標の局所最小値）」を検索
     mid = n_frames // 2
     first_half = wrist_y[:mid]
-
-    # 順方向に走査
     first_peak = int(np.argmin(first_half)) if len(first_half) > 0 else -1
 
-    # 2. 後半部分（最後から逆方向）で最初の「腕上げの山（Y座標の局所最小値）」を検索
     second_half = wrist_y[mid:]
     second_peak = (mid + int(np.argmin(second_half))) if len(second_half) > 0 else -1
 
-    # 2つのピークが近すぎる場合は1つのピークとして扱う安全策
     if abs(second_peak - first_peak) < 5:
         second_peak = -1
 
     return first_peak, second_peak
+
+
+def find_score_peak_indices(buffer):
+    if len(buffer) == 0:
+        return -1, -1
+
+    total_left_scores = [
+        item[4].get("LL_score", 0) + item[4].get("PL_score", 0) for item in buffer
+    ]
+    total_right_scores = [
+        item[4].get("LR_score", 0) + item[4].get("PR_score", 0) for item in buffer
+    ]
+
+    max_total_left = max(total_left_scores) if total_left_scores else 0
+    max_total_right = max(total_right_scores) if total_right_scores else 0
+
+    p_left = int(np.argmax(total_left_scores)) if max_total_left > 30 else -1
+    p_right = int(np.argmax(total_right_scores)) if max_total_right > 30 else -1
+
+    return p_left, p_right
 
 
 while True:
@@ -346,8 +358,11 @@ while True:
                     replay_world_landmarks_buffer = smooth_landmarks_buffer(
                         replay_world_landmarks_buffer, cutoff_freq=3.0, fs=30.0
                     )
-                    # 💡 腕高さの時系列変化（波形）から最初と最後の山を検出
-                    peak_idx_first, peak_idx_second = find_arm_height_peak_indices(
+                    (
+                        arm_peak_idx_first,
+                        arm_peak_idx_second,
+                    ) = find_arm_height_peak_indices(replay_world_landmarks_buffer)
+                    score_peak_idx_left, score_peak_idx_right = find_score_peak_indices(
                         replay_world_landmarks_buffer
                     )
 
@@ -378,7 +393,10 @@ while True:
                 if buf_len > 0:
                     SPEED_STEP = 0.75
                     show_pop = False
+                    show_left_score_pop = False
+                    show_right_score_pop = False
 
+                    # 1. 正面視点モード
                     if replay_phase == REPLAY_STATE_FRONT:
                         idx = int(event_detector.replay_index_float) % buf_len
 
@@ -386,12 +404,15 @@ while True:
                             if time.time() - pause_start_time >= 0.5:
                                 is_pausing_at_peak = False
                             else:
-                                if idx == peak_idx_first or idx == peak_idx_second:
+                                if (
+                                    idx == arm_peak_idx_first
+                                    or idx == arm_peak_idx_second
+                                ):
                                     show_pop = True
                         else:
-                            if (idx == peak_idx_first or idx == peak_idx_second) and (
-                                idx not in paused_peaks_hit
-                            ):
+                            if (
+                                idx == arm_peak_idx_first or idx == arm_peak_idx_second
+                            ) and (idx not in paused_peaks_hit):
                                 is_pausing_at_peak = True
                                 pause_start_time = time.time()
                                 paused_peaks_hit.add(idx)
@@ -416,6 +437,7 @@ while True:
                         ) = replay_world_landmarks_buffer[idx]
                         replay_pitch_deg = 0.0
 
+                    # 2. アングル切り替え（遷移）モード
                     elif replay_phase == REPLAY_STATE_TRANSITION:
                         elapsed = time.time() - transition_start_time
                         progress = min(1.0, elapsed / 1.0)
@@ -433,13 +455,39 @@ while True:
                             replay_phase = REPLAY_STATE_TOP
                             event_detector.replay_index_float = 0.0
                             replay_loop_count = 0
+                            is_pausing_at_peak = False
+                            paused_peaks_hit.clear()
 
+                    # 3. 💡 真上視点モード（左ピーク/右ピークに応じた2項目のみ個別表示）
                     elif replay_phase == REPLAY_STATE_TOP:
                         idx = int(event_detector.replay_index_float) % buf_len
-                        event_detector.replay_index_float += SPEED_STEP
+
+                        if is_pausing_at_peak:
+                            if time.time() - pause_start_time >= 1.0:
+                                is_pausing_at_peak = False
+                            else:
+                                if idx == score_peak_idx_left:
+                                    show_left_score_pop = True
+                                elif idx == score_peak_idx_right:
+                                    show_right_score_pop = True
+                        else:
+                            if (
+                                idx == score_peak_idx_left
+                                or idx == score_peak_idx_right
+                            ) and (idx not in paused_peaks_hit):
+                                is_pausing_at_peak = True
+                                pause_start_time = time.time()
+                                paused_peaks_hit.add(idx)
+                                if idx == score_peak_idx_left:
+                                    show_left_score_pop = True
+                                elif idx == score_peak_idx_right:
+                                    show_right_score_pop = True
+                            else:
+                                event_detector.replay_index_float += SPEED_STEP
 
                         if event_detector.replay_index_float >= buf_len:
                             event_detector.replay_index_float = 0.0
+                            paused_peaks_hit.clear()
                             replay_loop_count += 1
                             if replay_loop_count >= 2:
                                 replay_phase = REPLAY_STATE_FINISHED
@@ -471,6 +519,8 @@ while True:
                         curr_scores,
                         show_pop=show_pop,
                         pop_wrist_idx=curr_wrist_idx,
+                        show_left_score_pop=show_left_score_pop,
+                        show_right_score_pop=show_right_score_pop,
                     )
 
                     display_frame.set_dynamic_img(
@@ -514,6 +564,8 @@ while True:
             scores=event_detector.scores,
             show_pop=False,
             pop_wrist_idx=16,
+            show_left_score_pop=False,
+            show_right_score_pop=False,
         )
 
     display_frame.update_display()

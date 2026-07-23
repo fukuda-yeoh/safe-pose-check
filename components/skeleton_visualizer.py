@@ -43,8 +43,10 @@ class SkeletonVisualizer:
         pitch_deg=0.0,
         is_height_ok=False,
         scores=None,
-        show_pop=False,  # ポップアップ表示フラグ
-        pop_wrist_idx=16,  # ポップアップを表示する手首のインデックス (15:左手首, 16:右手首)
+        show_pop=False,  # 正面ポップアップフラグ
+        pop_wrist_idx=16,  # ポップアップを表示する手首のインデックス
+        show_left_score_pop=False,  # 💡 左側スコアポップアップ（Look Left, Point Left）
+        show_right_score_pop=False,  # 💡 右側スコアポップアップ（Look Right, Point Right）
     ):
         if world_landmarks is None:
             return
@@ -130,14 +132,14 @@ class SkeletonVisualizer:
             cv.line(canvas, l_shoulder, l_hip, self.COLOR_BONE, 4, cv.LINE_AA)
             cv.line(canvas, r_hip, l_hip, self.COLOR_BONE, 5, cv.LINE_AA)
 
-            # 💡 常時は標準の骨格色（COLOR_BONE）、OK時のみ黄緑色（COLOR_ACTIVE）へ変化
+            # 腕の描画
             r_arm_color = self.COLOR_BONE
             l_arm_color = self.COLOR_BONE
 
-            if is_height_ok:
-                if pop_wrist_idx == 16:  # 右手首が対象
+            if is_height_ok and show_pop:
+                if pop_wrist_idx == 16:
                     r_arm_color = self.COLOR_ACTIVE
-                elif pop_wrist_idx == 15:  # 左手首が対象
+                elif pop_wrist_idx == 15:
                     l_arm_color = self.COLOR_ACTIVE
 
             cv.line(canvas, r_shoulder, r_elbow, r_arm_color, 5, cv.LINE_AA)
@@ -157,7 +159,7 @@ class SkeletonVisualizer:
             ]:
                 cv.circle(canvas, pt, 3, self.COLOR_JOINT, -1, cv.LINE_AA)
 
-            # --- フィードバック表示 ---
+            # --- 正面モード フィードバック表示 ---
             if pitch_deg < 45.0 and show_pop:
                 target_wrist_px = get_px(pop_wrist_idx)
                 txt, color = (
@@ -177,7 +179,7 @@ class SkeletonVisualizer:
                     cv.LINE_AA,
                 )
 
-            # 真上モード (不足角度 ＆ 点数スコア)
+            # --- 真上モード フィードバック表示 ---
             if pitch_deg >= 45.0:
                 vec_x = (
                     world_landmarks[0].x
@@ -229,33 +231,46 @@ class SkeletonVisualizer:
                             cv.LINE_AA,
                         )
 
-                # スコアボックス描画
+                # 💡 【改修】該当する2項目のみをスコア表示
                 if scores is not None:
                     score_ll = scores.get("LL_score", 0)
                     score_lr = scores.get("LR_score", 0)
                     score_pl = scores.get("PL_score", 0)
                     score_pr = scores.get("PR_score", 0)
 
-                    top_quadrant_items = [
-                        (f"Look Left: {score_ll} pts", (15, 45), score_ll >= 80),
-                        (
-                            f"Look Right: {score_lr} pts",
-                            (self.width - 200, 45),
-                            score_lr >= 80,
-                        ),
-                        (
-                            f"Point Left: {score_pl} pts",
-                            (15, self.split_y - 15),
-                            score_pl >= 80,
-                        ),
-                        (
-                            f"Point Right: {score_pr} pts",
-                            (self.width - 200, self.split_y - 15),
-                            score_pr >= 80,
-                        ),
-                    ]
+                    items_to_draw = []
 
-                    for text, pos, is_ok in top_quadrant_items:
+                    # 左側ピーク時：Look Left & Point Left のみ
+                    if show_left_score_pop:
+                        items_to_draw.append(
+                            (f"Look Left: {score_ll} pts", (15, 45), score_ll >= 80)
+                        )
+                        items_to_draw.append(
+                            (
+                                f"Point Left: {score_pl} pts",
+                                (15, self.split_y - 15),
+                                score_pl >= 80,
+                            )
+                        )
+
+                    # 右側ピーク時：Look Right & Point Right のみ
+                    if show_right_score_pop:
+                        items_to_draw.append(
+                            (
+                                f"Look Right: {score_lr} pts",
+                                (self.width - 200, 45),
+                                score_lr >= 80,
+                            )
+                        )
+                        items_to_draw.append(
+                            (
+                                f"Point Right: {score_pr} pts",
+                                (self.width - 200, self.split_y - 15),
+                                score_pr >= 80,
+                            )
+                        )
+
+                    for text, pos, is_ok in items_to_draw:
                         color = (0, 255, 0) if is_ok else (0, 0, 255)
                         (text_w, text_h), _ = cv.getTextSize(
                             text, cv.FONT_HERSHEY_SIMPLEX, 0.43, 1
@@ -291,6 +306,8 @@ class SkeletonVisualizer:
         scores=None,
         show_pop=False,
         pop_wrist_idx=16,
+        show_left_score_pop=False,  # 💡 フラグ追加
+        show_right_score_pop=False,  # 💡 フラグ追加
     ):
         canvas = np.full((self.height, self.width, 3), self.COLOR_BG, dtype=np.uint8)
 
@@ -307,6 +324,8 @@ class SkeletonVisualizer:
             scores,
             show_pop,
             pop_wrist_idx,
+            show_left_score_pop,
+            show_right_score_pop,
         )
 
         if raw_camera_frame is not None:
