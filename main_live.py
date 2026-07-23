@@ -107,14 +107,7 @@ _ankn_img = cv.imread(str(ankn_img_path), cv.IMREAD_UNCHANGED)
 _action_img = cv.imread(str(action_img_path), cv.IMREAD_UNCHANGED)
 _notice_img = cv.imread(str(notice_img_path), cv.IMREAD_UNCHANGED)
 
-_result_img_display_width = 300
-_result_img_display_height = 300
-_ankn_img_display_width = 400
-_ankn_img_display_height = 400
-_action_img_display_width = 400
-_action_img_display_height = 400
-_notice_img_display_width = 400
-_notice_img_display_height = 400
+# 💡 【改修】固定サイズの定数を廃止。画面サイズに合わせて動的に計算するため不要。
 
 _display_area_notice_start_time = 0.0
 _is_notice_active = False
@@ -396,7 +389,6 @@ while True:
                     show_left_score_pop = False
                     show_right_score_pop = False
 
-                    # 1. 正面視点モード
                     if replay_phase == REPLAY_STATE_FRONT:
                         idx = int(event_detector.replay_index_float) % buf_len
 
@@ -437,7 +429,6 @@ while True:
                         ) = replay_world_landmarks_buffer[idx]
                         replay_pitch_deg = 0.0
 
-                    # 2. アングル切り替え（遷移）モード
                     elif replay_phase == REPLAY_STATE_TRANSITION:
                         elapsed = time.time() - transition_start_time
                         progress = min(1.0, elapsed / 1.0)
@@ -458,7 +449,6 @@ while True:
                             is_pausing_at_peak = False
                             paused_peaks_hit.clear()
 
-                    # 3. 💡 真上視点モード（左ピーク/右ピークに応じた2項目のみ個別表示）
                     elif replay_phase == REPLAY_STATE_TOP:
                         idx = int(event_detector.replay_index_float) % buf_len
 
@@ -594,18 +584,20 @@ while True:
     if event_detector.state == EventState.ENTERED_ROI:
         display_frame.clear_text_feedbacks()
 
+    # 💡 【改修】画像をモニターの高さに合わせて最大まで拡大し、四隅を合わせる
     if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
         if _is_notice_active:
             if _notice_img is not None:
-                display_frame.set_result_image(
-                    _notice_img,
-                    (
-                        (original_w - _notice_img_display_width) // 2,
-                        (original_h - _notice_img_display_height) // 2,
-                        _notice_img_display_width,
-                        _notice_img_display_height,
-                    ),
-                )
+                # 9:16のアスペクト比を維持して、モニターの高さ(original_h)いっぱいに表示
+                h = original_h
+                w = int(original_h * 9 / 16)
+
+                # 画面中央のX座標
+                x = (original_w - w) // 2
+                y = 0  # 上端にピタリと合わせる
+
+                display_frame.set_result_image(_notice_img, (x, y, w, h))
+
         elif _is_replay_active:
             display_frame.set_result_image(None)
             if _session_all_items_confirmed:
@@ -621,27 +613,25 @@ while True:
 
     elif event_detector.state == EventState.ENTERED_ROI:
         if _action_img is not None:
-            display_frame.set_result_image(
-                _action_img,
-                (
-                    (original_w - _action_img_display_width) // 2,
-                    (original_h - _action_img_display_height) // 2,
-                    _action_img_display_width,
-                    _action_img_display_height,
-                ),
-            )
+            # 9:16のアスペクト比を維持して、モニターの高さ(original_h)いっぱいに表示
+            h = original_h
+            w = int(original_h * 9 / 16)
+
+            x = (original_w - w) // 2
+            y = 0
+
+            display_frame.set_result_image(_action_img, (x, y, w, h))
 
     elif event_detector.state == EventState.NO_PERSON:
         if _ankn_img is not None:
-            display_frame.set_result_image(
-                _ankn_img,
-                (
-                    (original_w - _ankn_img_display_width) // 2,
-                    (original_h - _ankn_img_display_height) // 2,
-                    _ankn_img_display_width,
-                    _ankn_img_display_height,
-                ),
-            )
+            # 9:16のアスペクト比を維持して、モニターの高さ(original_h)いっぱいに表示
+            h = original_h
+            w = int(original_h * 9 / 16)
+
+            x = (original_w - w) // 2
+            y = 0
+
+            display_frame.set_result_image(_ankn_img, (x, y, w, h))
     else:
         display_frame.set_result_image(None)
 
