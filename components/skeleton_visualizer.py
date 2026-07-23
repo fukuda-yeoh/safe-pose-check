@@ -15,17 +15,16 @@ class SkeletonVisualizer:
         # カラー定義
         self.COLOR_BG = (15, 15, 15)
         self.COLOR_GRID = (35, 35, 35)
-        self.COLOR_BONE = (255, 150, 0)
+        self.COLOR_BONE = (255, 150, 0)  # 通常の骨格色（青系）
         self.COLOR_JOINT = (0, 255, 255)
         self.COLOR_TEXT = (240, 240, 240)
         self.COLOR_GUIDE = (0, 80, 0)
         self.COLOR_BODY_FILL = (40, 30, 10)
-        self.COLOR_ACTIVE = (0, 255, 0)
-        self.COLOR_NG = (0, 0, 255)
+        self.COLOR_ACTIVE = (0, 255, 0)  # OK時の腕の黄緑色
 
         # フィードバックカラー
-        self.COLOR_BLUE_OK = (255, 120, 0)
-        self.COLOR_RED_TEXT = (50, 50, 255)
+        self.COLOR_LIME_OK = (0, 255, 120)  # OK表示の文字色（黄緑）
+        self.COLOR_RED_TEXT = (50, 50, 255)  # NG表示の文字色（赤）
 
     def project_3d(self, x, y, z, pitch_deg, offset_x, offset_y, scale=120):
         rad = np.radians(pitch_deg)
@@ -42,9 +41,10 @@ class SkeletonVisualizer:
         canvas,
         world_landmarks,
         pitch_deg=0.0,
-        is_left_height_ok=False,
-        is_right_height_ok=False,
+        is_height_ok=False,
         scores=None,
+        show_pop=False,  # ポップアップ表示フラグ
+        pop_wrist_idx=16,  # ポップアップを表示する手首のインデックス (15:左手首, 16:右手首)
     ):
         if world_landmarks is None:
             return
@@ -119,19 +119,26 @@ class SkeletonVisualizer:
                 )
                 cv.addWeighted(overlay_body, 0.6, canvas, 0.4, 0, canvas)
 
-            # 頭部（丸）を描画
             cv.circle(canvas, (nose[0], nose[1] - 5), 13, (60, 60, 60), -1, cv.LINE_AA)
             cv.circle(
                 canvas, (nose[0], nose[1] - 5), 13, (120, 120, 120), 1, cv.LINE_AA
             )
 
-            l_arm_color = self.COLOR_ACTIVE if is_right_height_ok else self.COLOR_NG
-            r_arm_color = self.COLOR_ACTIVE if is_left_height_ok else self.COLOR_NG
-
+            # 体幹（胴体）
             cv.line(canvas, l_shoulder, r_shoulder, self.COLOR_BONE, 6, cv.LINE_AA)
             cv.line(canvas, r_shoulder, r_hip, self.COLOR_BONE, 4, cv.LINE_AA)
             cv.line(canvas, l_shoulder, l_hip, self.COLOR_BONE, 4, cv.LINE_AA)
             cv.line(canvas, r_hip, l_hip, self.COLOR_BONE, 5, cv.LINE_AA)
+
+            # 💡 常時は標準の骨格色（COLOR_BONE）、OK時のみ黄緑色（COLOR_ACTIVE）へ変化
+            r_arm_color = self.COLOR_BONE
+            l_arm_color = self.COLOR_BONE
+
+            if is_height_ok:
+                if pop_wrist_idx == 16:  # 右手首が対象
+                    r_arm_color = self.COLOR_ACTIVE
+                elif pop_wrist_idx == 15:  # 左手首が対象
+                    l_arm_color = self.COLOR_ACTIVE
 
             cv.line(canvas, r_shoulder, r_elbow, r_arm_color, 5, cv.LINE_AA)
             cv.line(canvas, r_elbow, r_wrist, r_arm_color, 3, cv.LINE_AA)
@@ -150,38 +157,23 @@ class SkeletonVisualizer:
             ]:
                 cv.circle(canvas, pt, 3, self.COLOR_JOINT, -1, cv.LINE_AA)
 
-            # フィードバック表示
-            # 正面モード (OK / NG)
-            if pitch_deg < 45.0:
-                txt_r, color_r = (
-                    ("OK", self.COLOR_BLUE_OK)
-                    if is_left_height_ok
+            # --- フィードバック表示 ---
+            if pitch_deg < 45.0 and show_pop:
+                target_wrist_px = get_px(pop_wrist_idx)
+                txt, color = (
+                    ("OK", self.COLOR_LIME_OK)
+                    if is_height_ok
                     else ("NG", self.COLOR_RED_TEXT)
                 )
-                txt_l, color_l = (
-                    ("OK", self.COLOR_BLUE_OK)
-                    if is_right_height_ok
-                    else ("NG", self.COLOR_RED_TEXT)
-                )
-
+                offset_x_txt = 12 if pop_wrist_idx == 15 else -35
                 cv.putText(
                     canvas,
-                    txt_r,
-                    (r_wrist[0] - 35, r_wrist[1] - 8),
+                    txt,
+                    (target_wrist_px[0] + offset_x_txt, target_wrist_px[1] - 8),
                     cv.FONT_HERSHEY_SIMPLEX,
-                    0.45,
-                    color_r,
-                    1,
-                    cv.LINE_AA,
-                )
-                cv.putText(
-                    canvas,
-                    txt_l,
-                    (l_wrist[0] + 12, l_wrist[1] - 8),
-                    cv.FONT_HERSHEY_SIMPLEX,
-                    0.45,
-                    color_l,
-                    1,
+                    0.6,
+                    color,
+                    2,
                     cv.LINE_AA,
                 )
 
@@ -201,14 +193,12 @@ class SkeletonVisualizer:
                     vx = vec_x / norm
                     vz = vec_z / norm
 
-                    # 💡 【ズレの完全解消】鼻の投影座標(nose)を起点とし、顔の丸のフチから外側へ矢印を伸ばす
                     start_pt = (int(nose[0]), int(nose[1] - 5))
                     end_pt = (
                         int(start_pt[0] + vx * 25),
                         int(start_pt[1] - vz * 25),
                     )
 
-                    # cv.arrowedLine で顔の輪郭先端から真直ぐ外側へ伸びる矢印を描画
                     cv.arrowedLine(
                         canvas,
                         start_pt,
@@ -239,7 +229,7 @@ class SkeletonVisualizer:
                             cv.LINE_AA,
                         )
 
-                # スコアボックスの描画
+                # スコアボックス描画
                 if scores is not None:
                     score_ll = scores.get("LL_score", 0)
                     score_lr = scores.get("LR_score", 0)
@@ -297,9 +287,10 @@ class SkeletonVisualizer:
         world_landmarks,
         raw_camera_frame=None,
         pitch_deg=0.0,
-        is_left_height_ok=False,
-        is_right_height_ok=False,
+        is_height_ok=False,
         scores=None,
+        show_pop=False,
+        pop_wrist_idx=16,
     ):
         canvas = np.full((self.height, self.width, 3), self.COLOR_BG, dtype=np.uint8)
 
@@ -312,9 +303,10 @@ class SkeletonVisualizer:
             canvas,
             world_landmarks,
             pitch_deg,
-            is_left_height_ok,
-            is_right_height_ok,
+            is_height_ok,
             scores,
+            show_pop,
+            pop_wrist_idx,
         )
 
         if raw_camera_frame is not None:

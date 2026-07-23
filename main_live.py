@@ -88,9 +88,6 @@ detector_thread = Thread(
 display_frame = DisplayFrame()
 visualizer = SkeletonVisualizer(width=640, height=480)
 
-has_left_high_ok = False
-has_right_high_ok = False
-
 recognition_thread.start()
 detector_thread.start()
 camera_thread.start()
@@ -144,17 +141,18 @@ transition_start_time = 0.0
 
 replay_world_landmarks_buffer = []
 
+peak_idx_first = -1
+peak_idx_second = -1
+is_pausing_at_peak = False
+pause_start_time = 0.0
+paused_peaks_hit = set()
+
 
 def smooth_landmarks_buffer(buffer, cutoff_freq=3.0, fs=30.0):
-    """
-    scipy.signal.butter & filtfilt を用い、録画バッファ内の3D関節座標（world_landmarks）に
-    ローパスフィルタを適用して高周波の振動・手ぶれノイズを滑らかに除去する関数
-    """
     n_frames = len(buffer)
-    if n_frames < 10:  # フレーム数が少なすぎる場合はフィルタ処理をスキップ
+    if n_frames < 10:
         return buffer
 
-    # 有効な world_landmarks を含むインデックスを取得
     valid_indices = [i for i, b in enumerate(buffer) if b[0] is not None]
     if len(valid_indices) < 10:
         return buffer
@@ -162,10 +160,8 @@ def smooth_landmarks_buffer(buffer, cutoff_freq=3.0, fs=30.0):
     sample_lmks = buffer[valid_indices[0]][0]
     n_lmks = len(sample_lmks)
 
-    # (n_frames, n_lmks, 3) の時系列3D配列を作成
     coords = np.zeros((n_frames, n_lmks, 3), dtype=np.float32)
 
-    # 補間用に初期値で埋める
     last_valid = None
     for i in range(n_frames):
         if buffer[i][0] is not None:
@@ -175,14 +171,10 @@ def smooth_landmarks_buffer(buffer, cutoff_freq=3.0, fs=30.0):
         if last_valid is not None:
             coords[i] = last_valid
 
-    # バターワースローパスフィルタの設計 (2次ローパスフィルタ)
     nyq = 0.5 * fs
     normal_cutoff = cutoff_freq / nyq
-
-    # フィルタ係数算出
     b_coeff, a_coeff = butter(N=2, Wn=normal_cutoff, btype="low", analog=False)
 
-    # 各関節・各軸 (X, Y, Z) に対して双方向フィルタ(filtfilt)を適用
     smoothed_coords = np.zeros_like(coords)
     padlen = min(9, n_frames - 1)
 
@@ -195,21 +187,17 @@ def smooth_landmarks_buffer(buffer, cutoff_freq=3.0, fs=30.0):
             except Exception:
                 smoothed_coords[:, j, axis] = coords[:, j, axis]
 
-    # フィルタ適用後の平滑化座標でバッファオブジェクトを更新構築
     smoothed_buffer = []
     for i in range(n_frames):
-        orig_lmks, cam_frame, r_ok, l_ok, scores = buffer[i]
+        orig_lmks, cam_frame, is_ok, wrist_idx, scores = buffer[i]
         if orig_lmks is None:
-            smoothed_buffer.append((None, cam_frame, r_ok, l_ok, scores))
+            smoothed_buffer.append((None, cam_frame, is_ok, wrist_idx, scores))
             continue
 
-        # 平滑化された座標で Landmark オブジェクトのディープコピーを作成
         new_lmks = []
         for j in range(n_lmks):
             lm = orig_lmks[j]
 
-            # 新しい座標値を反映させたオブジェクトの生成
-            # MediaPipeのLandmark互換オブジェクト構造を複製
             class SmoothedLandmark:
                 def __init__(self, x, y, z, visibility, presence):
                     self.x = x
@@ -227,9 +215,50 @@ def smooth_landmarks_buffer(buffer, cutoff_freq=3.0, fs=30.0):
                     getattr(lm, "presence", 0.0),
                 )
             )
-        smoothed_buffer.append((new_lmks, cam_frame, r_ok, l_ok, scores))
+        smoothed_buffer.append((new_lmks, cam_frame, is_ok, wrist_idx, scores))
 
     return smoothed_buffer
+
+
+def find_arm_height_peak_indices(buffer):
+    """
+    💡 【改修】腕の高さの時系列変化に基づき、
+    ・最初からデータを辿って最初に見つかる腕上げの山（1回目の動作ピーク）
+    ・最後からデータを遡って最初に見つかる腕上げの山（2回目の動作ピーク）
+    を検索するロジック
+    """
+    n_frames = len(buffer)
+    if n_frames < 10:
+        return -1, -1
+
+    # 各フレームにおける「左右の手首のうち、より高い方（Y座標が小さい方）のY値」を取り出す
+    wrist_y_list = []
+    for item in buffer:
+        lmks = item[0]
+        if lmks is not None:
+            min_y = min(lmks[15].y, lmks[16].y)
+            wrist_y_list.append(min_y)
+        else:
+            wrist_y_list.append(1.0)  # 検出なしの場合は底面扱い
+
+    wrist_y = np.array(wrist_y_list)
+
+    # 1. 前半部分（最初から順方向）で最初の「腕上げの山（Y座標の局所最小値）」を検索
+    mid = n_frames // 2
+    first_half = wrist_y[:mid]
+
+    # 順方向に走査
+    first_peak = int(np.argmin(first_half)) if len(first_half) > 0 else -1
+
+    # 2. 後半部分（最後から逆方向）で最初の「腕上げの山（Y座標の局所最小値）」を検索
+    second_half = wrist_y[mid:]
+    second_peak = (mid + int(np.argmin(second_half))) if len(second_half) > 0 else -1
+
+    # 2つのピークが近すぎる場合は1つのピークとして扱う安全策
+    if abs(second_peak - first_peak) < 5:
+        second_peak = -1
+
+    return first_peak, second_peak
 
 
 while True:
@@ -251,9 +280,8 @@ while True:
         original_h, original_w, _ = final_frame.shape
         white_frame = np.full((original_h, original_w, 3), 255, dtype=np.uint8)
 
-        # 【胸の高さ基準】左腕・右腕のそれぞれのリアルタイム物理高さを同時計算
-        is_left_arm_high = False
-        is_right_arm_high = False
+        is_height_ok = False
+        active_wrist_idx = 16
 
         if world_landmarks is not None:
             w_r_shoulder = world_landmarks[12]
@@ -265,41 +293,45 @@ while True:
             w_l_wrist = world_landmarks[15]
 
             mid_y_r = (w_r_shoulder.y + w_r_hip.y) / 2.0
-            is_right_arm_high = w_r_wrist.y < mid_y_r
-
             mid_y_l = (w_l_shoulder.y + w_l_hip.y) / 2.0
-            is_left_arm_high = w_l_wrist.y < mid_y_l
 
-        # エリア進入中（ROI）のみ、手首が上がった動作を検知してホールド
-        if event_detector.state == EventState.ENTERED_ROI:
-            if events.get("Point Left", {}).get("detected", False):
-                if is_left_arm_high or is_right_arm_high:
-                    has_left_high_ok = True
-            if events.get("Point Right", {}).get("detected", False):
-                if is_left_arm_high or is_right_arm_high:
-                    has_right_high_ok = True
-        elif event_detector.state == EventState.NO_PERSON:
-            has_left_high_ok = False
-            has_right_high_ok = False
+            right_is_high = w_r_wrist.y < mid_y_r
+            left_is_high = w_l_wrist.y < mid_y_l
 
-        # マネージャーウィンドウ（リアルタイムレンダリング）
+            if right_is_high and left_is_high:
+                if w_r_wrist.y < w_l_wrist.y:
+                    is_height_ok = True
+                    active_wrist_idx = 16
+                else:
+                    is_height_ok = True
+                    active_wrist_idx = 15
+            elif right_is_high:
+                is_height_ok = True
+                active_wrist_idx = 16
+            elif left_is_high:
+                is_height_ok = True
+                active_wrist_idx = 15
+            else:
+                is_height_ok = False
+                active_wrist_idx = 16
+
         manager_frame = visualizer.generate_animated_frame(
             world_landmarks,
             final_frame,
             replay_pitch_deg,
-            is_right_arm_high,
-            is_left_arm_high,
+            is_height_ok,
             event_detector.scores,
+            False,
+            active_wrist_idx,
         )
 
-        # 判定エリア(ROI)にいる間、データバッファへ蓄積
         if event_detector.state == EventState.ENTERED_ROI:
             replay_world_landmarks_buffer.append(
                 (
                     world_landmarks,
                     final_frame.copy(),
-                    is_right_arm_high,
-                    is_left_arm_high,
+                    is_height_ok,
+                    active_wrist_idx,
                     event_detector.scores.copy(),
                 )
             )
@@ -310,17 +342,21 @@ while True:
                 _is_notice_active = True
                 _display_area_notice_start_time = time.time()
 
-                # 💡【ローパスフィルタの一括適用】結果確認エリアに到達した瞬間、バッファを平滑化
                 if len(replay_world_landmarks_buffer) > 0:
                     replay_world_landmarks_buffer = smooth_landmarks_buffer(
                         replay_world_landmarks_buffer, cutoff_freq=3.0, fs=30.0
                     )
+                    # 💡 腕高さの時系列変化（波形）から最初と最後の山を検出
+                    peak_idx_first, peak_idx_second = find_arm_height_peak_indices(
+                        replay_world_landmarks_buffer
+                    )
 
-                # リプレイ状態の初期化
                 event_detector.replay_index_float = 0.0
                 replay_phase = REPLAY_STATE_FRONT
                 replay_pitch_deg = 0.0
                 replay_loop_count = 0
+                is_pausing_at_peak = False
+                paused_peaks_hit.clear()
 
                 _session_all_items_confirmed = (
                     all(ev["detected"] for ev in events.values()) if events else False
@@ -341,13 +377,31 @@ while True:
                 buf_len = len(replay_world_landmarks_buffer)
                 if buf_len > 0:
                     SPEED_STEP = 0.75
+                    show_pop = False
 
                     if replay_phase == REPLAY_STATE_FRONT:
                         idx = int(event_detector.replay_index_float) % buf_len
-                        event_detector.replay_index_float += SPEED_STEP
+
+                        if is_pausing_at_peak:
+                            if time.time() - pause_start_time >= 0.5:
+                                is_pausing_at_peak = False
+                            else:
+                                if idx == peak_idx_first or idx == peak_idx_second:
+                                    show_pop = True
+                        else:
+                            if (idx == peak_idx_first or idx == peak_idx_second) and (
+                                idx not in paused_peaks_hit
+                            ):
+                                is_pausing_at_peak = True
+                                pause_start_time = time.time()
+                                paused_peaks_hit.add(idx)
+                                show_pop = True
+                            else:
+                                event_detector.replay_index_float += SPEED_STEP
 
                         if event_detector.replay_index_float >= buf_len:
                             event_detector.replay_index_float = 0.0
+                            paused_peaks_hit.clear()
                             replay_loop_count += 1
                             if replay_loop_count >= 2:
                                 replay_phase = REPLAY_STATE_TRANSITION
@@ -356,8 +410,8 @@ while True:
                         (
                             curr_w_lmk,
                             curr_cam_frame,
-                            curr_r_ok,
-                            curr_l_ok,
+                            curr_is_ok,
+                            curr_wrist_idx,
                             curr_scores,
                         ) = replay_world_landmarks_buffer[idx]
                         replay_pitch_deg = 0.0
@@ -370,8 +424,8 @@ while True:
                         (
                             curr_w_lmk,
                             curr_cam_frame,
-                            curr_r_ok,
-                            curr_l_ok,
+                            curr_is_ok,
+                            curr_wrist_idx,
                             curr_scores,
                         ) = replay_world_landmarks_buffer[-1]
 
@@ -393,8 +447,8 @@ while True:
                         (
                             curr_w_lmk,
                             curr_cam_frame,
-                            curr_r_ok,
-                            curr_l_ok,
+                            curr_is_ok,
+                            curr_wrist_idx,
                             curr_scores,
                         ) = replay_world_landmarks_buffer[idx]
                         replay_pitch_deg = 90.0
@@ -403,20 +457,20 @@ while True:
                         (
                             curr_w_lmk,
                             curr_cam_frame,
-                            curr_r_ok,
-                            curr_l_ok,
+                            curr_is_ok,
+                            curr_wrist_idx,
                             curr_scores,
                         ) = replay_world_landmarks_buffer[-1]
                         replay_pitch_deg = 90.0
 
-                    # フィルタ適用済みの平滑化フレームを描画
                     replay_frame = visualizer.generate_animated_frame(
                         curr_w_lmk,
                         curr_cam_frame,
                         replay_pitch_deg,
-                        curr_r_ok,
-                        curr_l_ok,
+                        curr_is_ok,
                         curr_scores,
+                        show_pop=show_pop,
+                        pop_wrist_idx=curr_wrist_idx,
                     )
 
                     display_frame.set_dynamic_img(
@@ -456,9 +510,10 @@ while True:
             world_landmarks=None,
             raw_camera_frame=raw_cam,
             pitch_deg=0.0,
-            is_left_height_ok=False,
-            is_right_height_ok=False,
+            is_height_ok=False,
             scores=event_detector.scores,
+            show_pop=False,
+            pop_wrist_idx=16,
         )
 
     display_frame.update_display()
