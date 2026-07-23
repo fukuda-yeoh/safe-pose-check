@@ -9,13 +9,8 @@ class SkeletonVisualizer:
         self.width = width
         self.height = height
 
-        # 0.7 : 1.3 : 1.0 の比率
-        self.y_boundary_1 = int(height * (0.7 / 3.0))
-        self.y_boundary_2 = int(height * (2.0 / 3.0))
-
-        self.h_top = self.y_boundary_1
-        self.h_mid = self.y_boundary_2 - self.y_boundary_1
-        self.h_bot = height - self.y_boundary_2
+        # 上下2分割（各240px）
+        self.split_y = height // 2
 
         # カラー定義
         self.COLOR_BG = (15, 15, 15)
@@ -28,268 +23,115 @@ class SkeletonVisualizer:
         self.COLOR_ACTIVE = (0, 255, 0)
         self.COLOR_NG = (0, 0, 255)
 
-        # フィードバック用のカラー
-        self.COLOR_BLUE_OK = (255, 120, 0)  # 視認性の良いシアン・ブルー系
-        self.COLOR_RED_TEXT = (50, 50, 255)  # 警告用の赤文字
+        # フィードバックカラー
+        self.COLOR_BLUE_OK = (255, 120, 0)
+        self.COLOR_RED_TEXT = (50, 50, 255)
 
-    def create_base_canvas(self, raw_camera_frame=None):
-        canvas = np.full((self.height, self.width, 3), self.COLOR_BG, dtype=np.uint8)
+    def project_3d(self, x, y, z, pitch_deg, offset_x, offset_y, scale=120):
+        rad = np.radians(pitch_deg)
+        cos_p = np.cos(rad)
+        sin_p = np.sin(rad)
+        y_rot = y * cos_p - z * sin_p
 
-        for x in range(0, self.width, 50):
-            cv.line(canvas, (x, 0), (x, self.y_boundary_1), self.COLOR_GRID, 1)
-            cv.line(
-                canvas, (x, self.y_boundary_2), (x, self.height), self.COLOR_GRID, 1
-            )
+        px = int(offset_x + x * scale)
+        py = int(offset_y + y_rot * scale)
+        return (px, py)
 
-        for y in range(0, self.y_boundary_1, 50):
-            cv.line(canvas, (0, y), (self.width, y), self.COLOR_GRID, 1)
-        for y in range(self.y_boundary_2, self.height, 50):
-            cv.line(canvas, (0, y), (self.width, y), self.COLOR_GRID, 1)
-
-        if raw_camera_frame is not None:
-            resized_camera = cv.resize(raw_camera_frame, (self.width, self.h_mid))
-            canvas[
-                self.y_boundary_1 : self.y_boundary_2, 0 : self.width
-            ] = resized_camera
-
-        cv.line(
-            canvas,
-            (0, self.y_boundary_1),
-            (self.width, self.y_boundary_1),
-            (80, 80, 80),
-            2,
-        )
-        cv.line(
-            canvas,
-            (0, self.y_boundary_2),
-            (self.width, self.y_boundary_2),
-            (80, 80, 80),
-            2,
-        )
-
-        titles = [
-            ("TOP VIEW (Look Angle)", 15, 25),
-            ("ACTUAL CAMERA VIEW", 15, self.y_boundary_1 + 25),
-            ("HIGH VIEW (Arm Height)", 15, self.y_boundary_2 + 25),
-        ]
-        for text, tx, ty in titles:
-            cv.putText(
-                canvas,
-                text,
-                (tx + 1, ty + 1),
-                cv.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (0, 0, 0),
-                2,
-                cv.LINE_AA,
-            )
-            cv.putText(
-                canvas,
-                text,
-                (tx, ty),
-                cv.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                self.COLOR_TEXT,
-                1,
-                cv.LINE_AA,
-            )
-
-        return canvas
-
-    def draw_top_view(self, canvas, world_landmarks):
-        """上段：TOP VIEW - 真左（0度）と真右（180度）に合格ガイドラインを水平に描画"""
+    def draw_3d_skeleton(
+        self,
+        canvas,
+        world_landmarks,
+        pitch_deg=0.0,
+        is_left_height_ok=False,
+        is_right_height_ok=False,
+        scores=None,
+    ):
         if world_landmarks is None:
             return
+
         try:
-            scale = 130
+            scale = 120
             offset_x = self.width // 2
-            offset_y = self.h_top // 2 + 15
+            offset_y = int(160 * (1.0 - pitch_deg / 90.0) + 120 * (pitch_deg / 90.0))
 
-            def to_pixel(pt):
-                px = int(offset_x + pt.x * scale)
-                py = int(offset_y - pt.z * scale)
-                return (px, py)
+            def get_px(idx):
+                lm = world_landmarks[idx]
+                return self.project_3d(
+                    lm.x, lm.y, lm.z, pitch_deg, offset_x, offset_y, scale
+                )
 
-            nose = to_pixel(world_landmarks[0])
-            l_shoulder = to_pixel(world_landmarks[11])
-            r_shoulder = to_pixel(world_landmarks[12])
-            r_elbow = to_pixel(world_landmarks[14])
-            r_wrist = to_pixel(world_landmarks[16])
-            l_elbow_px = to_pixel(world_landmarks[13])
-            l_wrist_px = to_pixel(world_landmarks[15])
+            nose = get_px(0)
+            l_shoulder = get_px(11)
+            r_shoulder = get_px(12)
+            l_elbow = get_px(13)
+            r_elbow = get_px(14)
+            l_wrist = get_px(15)
+            r_wrist = get_px(16)
+            l_hip = get_px(23)
+            r_hip = get_px(24)
 
             mid_shoulder_x = (l_shoulder[0] + r_shoulder[0]) // 2
             mid_shoulder_y = (l_shoulder[1] + r_shoulder[1]) // 2
 
-            # 💡 【修正】合格ラインを真左（0度）と真右（180度）に、両肩の中点を結ぶ一本の水平なガイド線として描画
-            cv.line(
-                canvas,
-                (mid_shoulder_x - 70, mid_shoulder_y - 10),
-                (mid_shoulder_x + 70, mid_shoulder_y - 10),
-                self.COLOR_GUIDE,
-                1,
-                cv.LINE_AA,
-            )
-
-            # 中央の基準正面線（細いグレー線）
-            cv.line(
-                canvas,
-                (mid_shoulder_x, mid_shoulder_y),
-                (mid_shoulder_x, mid_shoulder_y - 40),
-                (50, 50, 50),
-                1,
-                cv.LINE_AA,
-            )
-
-            # 骨格リンク
-            cv.line(canvas, l_shoulder, r_shoulder, self.COLOR_BONE, 7, cv.LINE_AA)
-            cv.line(canvas, r_shoulder, r_elbow, self.COLOR_BONE, 4, cv.LINE_AA)
-            cv.line(canvas, r_elbow, r_wrist, self.COLOR_BONE, 3, cv.LINE_AA)
-            cv.line(canvas, l_shoulder, l_elbow_px, self.COLOR_BONE, 4, cv.LINE_AA)
-            cv.line(canvas, l_elbow_px, l_wrist_px, self.COLOR_BONE, 3, cv.LINE_AA)
-
-            # 頭部
-            head_radius = 16
-            cv.circle(
-                canvas,
-                (mid_shoulder_x, mid_shoulder_y - 10),
-                head_radius,
-                (60, 60, 60),
-                -1,
-                cv.LINE_AA,
-            )
-            cv.circle(
-                canvas,
-                (mid_shoulder_x, mid_shoulder_y - 10),
-                head_radius,
-                (120, 120, 120),
-                1,
-                cv.LINE_AA,
-            )
-
-            # 形状固定の首振り矢印
-            vec_x = nose[0] - mid_shoulder_x
-            vec_y = nose[1] - (mid_shoulder_y - 10)
-            norm = np.sqrt(vec_x**2 + vec_y**2)
-
-            # 💡 【修正】実際の判定用パラメータ（頭部角度）と同じロジックで不足角度を追従描画
-            if norm > 0:
-                vx = vec_x / norm
-                vy = vec_y / norm
-                arrow_tip = (
-                    int(mid_shoulder_x + vx * 25),
-                    int(mid_shoulder_y - 10 + vy * 25),
+            # ガイドライン描画
+            if pitch_deg < 45.0:
+                mid_y_r_pixel = (r_shoulder[1] + r_hip[1]) // 2
+                alpha_front = (45.0 - pitch_deg) / 45.0
+                guide_color = (
+                    int(0 * alpha_front),
+                    int(80 * alpha_front),
+                    int(0 * alpha_front),
                 )
-                perp_x = -vy * 8
-                perp_y = vx * 8
-                p1 = (int(mid_shoulder_x + perp_x), int(mid_shoulder_y - 10 + perp_y))
-                p2 = (int(mid_shoulder_x - perp_x), int(mid_shoulder_y - 10 - perp_y))
+                cv.line(
+                    canvas,
+                    (0, mid_y_r_pixel),
+                    (self.width, mid_y_r_pixel),
+                    guide_color,
+                    1,
+                    cv.LINE_AA,
+                )
 
-                poly_points = np.array([p1, p2, arrow_tip], dtype=np.int32)
-                cv.fillPoly(canvas, [poly_points], (0, 255, 0), cv.LINE_AA)
+            if pitch_deg >= 45.0:
+                alpha_top = (pitch_deg - 45.0) / 45.0
+                guide_color = (
+                    int(0 * alpha_top),
+                    int(80 * alpha_top),
+                    int(0 * alpha_top),
+                )
+                cv.line(
+                    canvas,
+                    (mid_shoulder_x - 70, mid_shoulder_y),
+                    (mid_shoulder_x + 70, mid_shoulder_y),
+                    guide_color,
+                    1,
+                    cv.LINE_AA,
+                )
 
-                # 頭部の角度を計算（event_detector内部と100%同期するアルゴリズム）
-                # 正面が 90度
-                current_angle = np.degrees(np.arctan2(-vec_y, vec_x))
+            # 胴体・骨格
+            if pitch_deg < 60.0:
+                body_poly = np.array(
+                    [l_shoulder, r_shoulder, r_hip, l_hip], dtype=np.int32
+                )
+                overlay_body = canvas.copy()
+                cv.fillPoly(overlay_body, [body_poly], self.COLOR_BODY_FILL, cv.LINE_AA)
+                cv.polylines(
+                    overlay_body, [body_poly], True, self.COLOR_BONE, 2, cv.LINE_AA
+                )
+                cv.addWeighted(overlay_body, 0.6, canvas, 0.4, 0, canvas)
 
-                # angleを [0, 180] にクランプ
-                current_angle = np.clip(current_angle, 0.0, 180.0)
-
-                # 左を向こうとしているか、右を向こうとしているかで分岐
-                if current_angle > 90:
-                    # 右向き判定（130度以上が合格。130度までの不足を計算）
-                    diff_deg = int(max(0, 130 - current_angle))
-                else:
-                    # 左向き判定（30度以下が合格。30度までの不足を計算）
-                    diff_deg = int(max(0, current_angle - 30))
-
-                if diff_deg > 0:
-                    # 合格判定の範囲（左30度、右130度）に達していない場合のみ、不足角度を表示
-                    cv.putText(
-                        canvas,
-                        f"{diff_deg} deg",
-                        (mid_shoulder_x + 20, mid_shoulder_y - 20),
-                        cv.FONT_HERSHEY_SIMPLEX,
-                        0.43,
-                        self.COLOR_RED_TEXT,
-                        1,
-                        cv.LINE_AA,
-                    )
-
-            for pt in [
-                l_shoulder,
-                r_shoulder,
-                r_elbow,
-                r_wrist,
-                l_elbow_px,
-                l_wrist_px,
-            ]:
-                cv.circle(canvas, pt, 3, self.COLOR_JOINT, -1, cv.LINE_AA)
-        except Exception as e:
-            pass
-
-    def draw_front_view(
-        self, canvas, world_landmarks, is_left_height_ok=False, is_right_height_ok=False
-    ):
-        """下段：HIGH VIEW - 胸の合格ラインの常時描画 ＆ 手首横への「OK / NG」の表示"""
-        if world_landmarks is None:
-            return
-        try:
-            scale = 130
-            offset_x = self.width // 2
-            offset_y = (self.y_boundary_2) + 105
-
-            def to_pixel(pt):
-                px = int(offset_x + pt.x * scale)
-                py = int(offset_y + pt.y * scale)
-                return (px, py)
+            cv.circle(canvas, (nose[0], nose[1] - 5), 13, (60, 60, 60), -1, cv.LINE_AA)
+            cv.circle(
+                canvas, (nose[0], nose[1] - 5), 13, (120, 120, 120), 1, cv.LINE_AA
+            )
 
             l_arm_color = self.COLOR_ACTIVE if is_right_height_ok else self.COLOR_NG
             r_arm_color = self.COLOR_ACTIVE if is_left_height_ok else self.COLOR_NG
 
-            nose = to_pixel(world_landmarks[0])
-            l_shoulder = to_pixel(world_landmarks[11])
-            r_shoulder = to_pixel(world_landmarks[12])
-            l_elbow = to_pixel(world_landmarks[13])
-            l_wrist = to_pixel(world_landmarks[15])
-            r_elbow = to_pixel(world_landmarks[14])
-            r_wrist = to_pixel(world_landmarks[16])
-            r_hip = to_pixel(world_landmarks[24])
-            l_hip = to_pixel(world_landmarks[23])
-
-            # HIGH VIEW合格ライン：胸の高さ（肩と腰の中点）
-            mid_y_r_pixel = (r_shoulder[1] + r_hip[1]) // 2
-            cv.line(
-                canvas,
-                (0, mid_y_r_pixel),
-                (self.width, mid_y_r_pixel),
-                self.COLOR_GUIDE,
-                1,
-                cv.LINE_AA,
-            )
-
-            # 胴体ポリゴン
-            body_poly = np.array([l_shoulder, r_shoulder, r_hip, l_hip], dtype=np.int32)
-            overlay_body = canvas.copy()
-            cv.fillPoly(overlay_body, [body_poly], self.COLOR_BODY_FILL, cv.LINE_AA)
-            cv.polylines(
-                overlay_body, [body_poly], True, self.COLOR_BONE, 2, cv.LINE_AA
-            )
-            cv.addWeighted(overlay_body, 0.6, canvas, 0.4, 0, canvas)
-
-            # 頭部
-            cv.circle(canvas, (nose[0], nose[1] - 5), 14, (60, 60, 60), -1, cv.LINE_AA)
-            cv.circle(
-                canvas, (nose[0], nose[1] - 5), 14, (120, 120, 120), 1, cv.LINE_AA
-            )
-
-            # 体幹
             cv.line(canvas, l_shoulder, r_shoulder, self.COLOR_BONE, 6, cv.LINE_AA)
             cv.line(canvas, r_shoulder, r_hip, self.COLOR_BONE, 4, cv.LINE_AA)
             cv.line(canvas, l_shoulder, l_hip, self.COLOR_BONE, 4, cv.LINE_AA)
             cv.line(canvas, r_hip, l_hip, self.COLOR_BONE, 5, cv.LINE_AA)
 
-            # 実際の腕
             cv.line(canvas, r_shoulder, r_elbow, r_arm_color, 5, cv.LINE_AA)
             cv.line(canvas, r_elbow, r_wrist, r_arm_color, 3, cv.LINE_AA)
             cv.line(canvas, l_shoulder, l_elbow, l_arm_color, 5, cv.LINE_AA)
@@ -307,52 +149,217 @@ class SkeletonVisualizer:
             ]:
                 cv.circle(canvas, pt, 3, self.COLOR_JOINT, -1, cv.LINE_AA)
 
-            # 手首横への OK / NG 表示
-            txt_r, color_r = (
-                ("OK", self.COLOR_BLUE_OK)
-                if is_left_height_ok
-                else ("NG", self.COLOR_RED_TEXT)
-            )
-            txt_l, color_l = (
-                ("OK", self.COLOR_BLUE_OK)
-                if is_right_height_ok
-                else ("NG", self.COLOR_RED_TEXT)
-            )
+            # フィードバック表示
+            # 正面モード (OK / NG)
+            if pitch_deg < 45.0:
+                txt_r, color_r = (
+                    ("OK", self.COLOR_BLUE_OK)
+                    if is_left_height_ok
+                    else ("NG", self.COLOR_RED_TEXT)
+                )
+                txt_l, color_l = (
+                    ("OK", self.COLOR_BLUE_OK)
+                    if is_right_height_ok
+                    else ("NG", self.COLOR_RED_TEXT)
+                )
 
-            cv.putText(
-                canvas,
-                txt_r,
-                (r_wrist[0] - 35, r_wrist[1] - 8),
-                cv.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                color_r,
-                1,
-                cv.LINE_AA,
-            )
-            cv.putText(
-                canvas,
-                txt_l,
-                (l_wrist[0] + 12, l_wrist[1] - 8),
-                cv.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                color_l,
-                1,
-                cv.LINE_AA,
-            )
+                cv.putText(
+                    canvas,
+                    txt_r,
+                    (r_wrist[0] - 35, r_wrist[1] - 8),
+                    cv.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    color_r,
+                    1,
+                    cv.LINE_AA,
+                )
+                cv.putText(
+                    canvas,
+                    txt_l,
+                    (l_wrist[0] + 12, l_wrist[1] - 8),
+                    cv.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    color_l,
+                    1,
+                    cv.LINE_AA,
+                )
+
+            # 真上モード (不足角度 ＆ 点数スコア)
+            if pitch_deg >= 45.0:
+                vec_x = (
+                    world_landmarks[0].x
+                    - (world_landmarks[11].x + world_landmarks[12].x) / 2.0
+                )
+                vec_z = (
+                    world_landmarks[0].z
+                    - (world_landmarks[11].z + world_landmarks[12].z) / 2.0
+                )
+                norm = np.sqrt(vec_x**2 + vec_z**2)
+
+                if norm > 0:
+                    vx = vec_x / norm
+                    vz = vec_z / norm
+                    arrow_tip = (
+                        int(mid_shoulder_x + vx * 25),
+                        int(mid_shoulder_y - vz * 25),
+                    )
+                    perp_x = vz * 8
+                    perp_z = vx * 8
+                    p1 = (int(mid_shoulder_x + perp_x), int(mid_shoulder_y + perp_z))
+                    p2 = (int(mid_shoulder_x - perp_x), int(mid_shoulder_y - perp_z))
+
+                    poly_points = np.array([p1, p2, arrow_tip], dtype=np.int32)
+                    cv.fillPoly(canvas, [poly_points], (0, 255, 0), cv.LINE_AA)
+
+                    current_angle = np.degrees(np.arctan2(-vec_z, vec_x))
+                    current_angle = np.clip(current_angle, 0.0, 180.0)
+
+                    if current_angle > 90:
+                        diff_deg = int(max(0, 130 - current_angle))
+                    else:
+                        diff_deg = int(max(0, current_angle - 30))
+
+                    if diff_deg > 0:
+                        cv.putText(
+                            canvas,
+                            f"{diff_deg} deg",
+                            (mid_shoulder_x + 20, mid_shoulder_y - 20),
+                            cv.FONT_HERSHEY_SIMPLEX,
+                            0.43,
+                            self.COLOR_RED_TEXT,
+                            1,
+                            cv.LINE_AA,
+                        )
+
+                # 💡 【復活】真上視点時の4項目スコアボックスの描画
+                if scores is not None:
+                    score_ll = scores.get("LL_score", 0)
+                    score_lr = scores.get("LR_score", 0)
+                    score_pl = scores.get("PL_score", 0)
+                    score_pr = scores.get("PR_score", 0)
+
+                    top_quadrant_items = [
+                        (f"Look Left: {score_ll} pts", (15, 45), score_ll >= 80),
+                        (
+                            f"Look Right: {score_lr} pts",
+                            (self.width - 200, 45),
+                            score_lr >= 80,
+                        ),
+                        (
+                            f"Point Left: {score_pl} pts",
+                            (15, self.split_y - 15),
+                            score_pl >= 80,
+                        ),
+                        (
+                            f"Point Right: {score_pr} pts",
+                            (self.width - 200, self.split_y - 15),
+                            score_pr >= 80,
+                        ),
+                    ]
+
+                    for text, pos, is_ok in top_quadrant_items:
+                        color = (0, 255, 0) if is_ok else (0, 0, 255)
+                        (text_w, text_h), _ = cv.getTextSize(
+                            text, cv.FONT_HERSHEY_SIMPLEX, 0.43, 1
+                        )
+                        box_x1, box_y1 = pos[0] - 6, pos[1] - text_h - 6
+                        box_x2, box_y2 = pos[0] + text_w + 6, pos[1] + 4
+                        cv.rectangle(
+                            canvas, (box_x1, box_y1), (box_x2, box_y2), (15, 15, 15), -1
+                        )
+                        cv.rectangle(
+                            canvas, (box_x1, box_y1), (box_x2, box_y2), (60, 60, 60), 1
+                        )
+                        cv.putText(
+                            canvas,
+                            text,
+                            pos,
+                            cv.FONT_HERSHEY_SIMPLEX,
+                            0.43,
+                            color,
+                            1,
+                            cv.LINE_AA,
+                        )
 
         except Exception as e:
             pass
 
-    def generate_frame(
+    def generate_animated_frame(
         self,
         world_landmarks,
         raw_camera_frame=None,
+        pitch_deg=0.0,
         is_left_height_ok=False,
         is_right_height_ok=False,
+        scores=None,
     ):
-        canvas = self.create_base_canvas(raw_camera_frame)
-        self.draw_top_view(canvas, world_landmarks)
-        self.draw_front_view(
-            canvas, world_landmarks, is_left_height_ok, is_right_height_ok
+        canvas = np.full((self.height, self.width, 3), self.COLOR_BG, dtype=np.uint8)
+
+        for x in range(0, self.width, 50):
+            cv.line(canvas, (x, 0), (x, self.split_y), self.COLOR_GRID, 1)
+        for y in range(0, self.split_y, 50):
+            cv.line(canvas, (0, y), (self.width, y), self.COLOR_GRID, 1)
+
+        self.draw_3d_skeleton(
+            canvas,
+            world_landmarks,
+            pitch_deg,
+            is_left_height_ok,
+            is_right_height_ok,
+            scores,
         )
+
+        if raw_camera_frame is not None:
+            resized_cam = cv.resize(raw_camera_frame, (self.width, self.split_y))
+            canvas[self.split_y : self.height, 0 : self.width] = resized_cam
+
+        cv.line(canvas, (0, self.split_y), (self.width, self.split_y), (80, 80, 80), 2)
+
+        mode_title = (
+            "3D POSE ANIMATION (HIGH VIEW)"
+            if pitch_deg < 45.0
+            else "3D POSE ANIMATION (TOP VIEW)"
+        )
+        cv.putText(
+            canvas,
+            mode_title,
+            (16, 22),
+            cv.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 0, 0),
+            2,
+            cv.LINE_AA,
+        )
+        cv.putText(
+            canvas,
+            mode_title,
+            (15, 21),
+            cv.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            self.COLOR_TEXT,
+            1,
+            cv.LINE_AA,
+        )
+
+        cv.putText(
+            canvas,
+            "ACTUAL CAMERA VIEW",
+            (16, self.split_y + 22),
+            cv.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 0, 0),
+            2,
+            cv.LINE_AA,
+        )
+        cv.putText(
+            canvas,
+            "ACTUAL CAMERA VIEW",
+            (15, self.split_y + 21),
+            cv.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            self.COLOR_TEXT,
+            1,
+            cv.LINE_AA,
+        )
+
         return canvas

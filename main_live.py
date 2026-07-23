@@ -11,6 +11,7 @@ os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 import cv2 as cv
 import numpy as np
 from threading import Thread
+from scipy.signal import butter, filtfilt
 
 from components import (
     CameraThread,
@@ -131,6 +132,106 @@ _detect_played_for_look_right = False
 _detect_played_for_point_left = False
 _detect_played_for_point_right = False
 
+REPLAY_STATE_FRONT = 0
+REPLAY_STATE_TRANSITION = 1
+REPLAY_STATE_TOP = 2
+REPLAY_STATE_FINISHED = 3
+
+replay_phase = REPLAY_STATE_FRONT
+replay_pitch_deg = 0.0
+replay_loop_count = 0
+transition_start_time = 0.0
+
+replay_world_landmarks_buffer = []
+
+
+def smooth_landmarks_buffer(buffer, cutoff_freq=3.0, fs=30.0):
+    """
+    scipy.signal.butter & filtfilt を用い、録画バッファ内の3D関節座標（world_landmarks）に
+    ローパスフィルタを適用して高周波の振動・手ぶれノイズを滑らかに除去する関数
+    """
+    n_frames = len(buffer)
+    if n_frames < 10:  # フレーム数が少なすぎる場合はフィルタ処理をスキップ
+        return buffer
+
+    # 有効な world_landmarks を含むインデックスを取得
+    valid_indices = [i for i, b in enumerate(buffer) if b[0] is not None]
+    if len(valid_indices) < 10:
+        return buffer
+
+    sample_lmks = buffer[valid_indices[0]][0]
+    n_lmks = len(sample_lmks)
+
+    # (n_frames, n_lmks, 3) の時系列3D配列を作成
+    coords = np.zeros((n_frames, n_lmks, 3), dtype=np.float32)
+
+    # 補間用に初期値で埋める
+    last_valid = None
+    for i in range(n_frames):
+        if buffer[i][0] is not None:
+            last_valid = np.array(
+                [[lm.x, lm.y, lm.z] for lm in buffer[i][0]], dtype=np.float32
+            )
+        if last_valid is not None:
+            coords[i] = last_valid
+
+    # バターワースローパスフィルタの設計 (2次ローパスフィルタ)
+    nyq = 0.5 * fs
+    normal_cutoff = cutoff_freq / nyq
+
+    # フィルタ係数算出
+    b_coeff, a_coeff = butter(N=2, Wn=normal_cutoff, btype="low", analog=False)
+
+    # 各関節・各軸 (X, Y, Z) に対して双方向フィルタ(filtfilt)を適用
+    smoothed_coords = np.zeros_like(coords)
+    padlen = min(9, n_frames - 1)
+
+    for j in range(n_lmks):
+        for axis in range(3):
+            try:
+                smoothed_coords[:, j, axis] = filtfilt(
+                    b_coeff, a_coeff, coords[:, j, axis], padlen=padlen
+                )
+            except Exception:
+                smoothed_coords[:, j, axis] = coords[:, j, axis]
+
+    # フィルタ適用後の平滑化座標でバッファオブジェクトを更新構築
+    smoothed_buffer = []
+    for i in range(n_frames):
+        orig_lmks, cam_frame, r_ok, l_ok, scores = buffer[i]
+        if orig_lmks is None:
+            smoothed_buffer.append((None, cam_frame, r_ok, l_ok, scores))
+            continue
+
+        # 平滑化された座標で Landmark オブジェクトのディープコピーを作成
+        new_lmks = []
+        for j in range(n_lmks):
+            lm = orig_lmks[j]
+
+            # 新しい座標値を反映させたオブジェクトの生成
+            # MediaPipeのLandmark互換オブジェクト構造を複製
+            class SmoothedLandmark:
+                def __init__(self, x, y, z, visibility, presence):
+                    self.x = x
+                    self.y = y
+                    self.z = z
+                    self.visibility = visibility
+                    self.presence = presence
+
+            new_lmks.append(
+                SmoothedLandmark(
+                    smoothed_coords[i, j, 0],
+                    smoothed_coords[i, j, 1],
+                    smoothed_coords[i, j, 2],
+                    getattr(lm, "visibility", 0.0),
+                    getattr(lm, "presence", 0.0),
+                )
+            )
+        smoothed_buffer.append((new_lmks, cam_frame, r_ok, l_ok, scores))
+
+    return smoothed_buffer
+
+
 while True:
     (
         frame_timestamp_ms,
@@ -150,9 +251,7 @@ while True:
         original_h, original_w, _ = final_frame.shape
         white_frame = np.full((original_h, original_w, 3), 255, dtype=np.uint8)
 
-        # ======================================================================
         # 【胸の高さ基準】左腕・右腕のそれぞれのリアルタイム物理高さを同時計算
-        # ======================================================================
         is_left_arm_high = False
         is_right_arm_high = False
 
@@ -165,15 +264,13 @@ while True:
             w_l_hip = world_landmarks[23]
             w_l_wrist = world_landmarks[15]
 
-            # 右側の「肩と腰の中点」のY座標を計算
             mid_y_r = (w_r_shoulder.y + w_r_hip.y) / 2.0
             is_right_arm_high = w_r_wrist.y < mid_y_r
 
-            # 左側の「肩と腰の中点」のY座標を計算
             mid_y_l = (w_l_shoulder.y + w_l_hip.y) / 2.0
             is_left_arm_high = w_l_wrist.y < mid_y_l
 
-        # エリア進入中（ROI）のみ、いずれかの手首が上がった動作を検知してホールド
+        # エリア進入中（ROI）のみ、手首が上がった動作を検知してホールド
         if event_detector.state == EventState.ENTERED_ROI:
             if events.get("Point Left", {}).get("detected", False):
                 if is_left_arm_high or is_right_arm_high:
@@ -185,95 +282,45 @@ while True:
             has_left_high_ok = False
             has_right_high_ok = False
 
-        # 瞬間的な腕上げ状態を両方渡すようにビジュアライザを更新
-        manager_frame = visualizer.generate_frame(
-            world_landmarks, final_frame, is_right_arm_high, is_left_arm_high
+        # マネージャーウィンドウ（リアルタイムレンダリング）
+        manager_frame = visualizer.generate_animated_frame(
+            world_landmarks,
+            final_frame,
+            replay_pitch_deg,
+            is_right_arm_high,
+            is_left_arm_high,
+            event_detector.scores,
         )
 
-        f_h, f_w, _ = manager_frame.shape
-        one_third_h = visualizer.y_boundary_1
-
-        # ① 上段 (TOP VIEW) の四隅に「角度スコア」を描画
-        score_ll = event_detector.scores.get("LL_score", 0)
-        score_lr = event_detector.scores.get("LR_score", 0)
-        score_pl = event_detector.scores.get("PL_score", 0)
-        score_pr = event_detector.scores.get("PR_score", 0)
-
-        top_quadrant_items = [
-            (f"Look Left: {score_ll} pts", (15, 35), score_ll >= 80),
-            (f"Look Right: {score_lr} pts", (f_w - 215, 35), score_lr >= 80),
-            (f"Point Left: {score_pl} pts", (15, one_third_h - 20), score_pl >= 80),
-            (
-                f"Point Right: {score_pr} pts",
-                (f_w - 215, one_third_h - 20),
-                score_pr >= 80,
-            ),
-        ]
-
-        for text, pos, is_ok in top_quadrant_items:
-            color = (0, 255, 0) if is_ok else (0, 0, 255)
-            (text_w, text_h), _ = cv.getTextSize(text, cv.FONT_HERSHEY_SIMPLEX, 0.53, 1)
-            box_x1, box_y1 = pos[0] - 8, pos[1] - text_h - 8
-            box_x2, box_y2 = pos[0] + text_w + 8, pos[1] + 6
-            cv.rectangle(
-                manager_frame, (box_x1, box_y1), (box_x2, box_y2), (15, 15, 15), -1
-            )
-            cv.rectangle(
-                manager_frame, (box_x1, box_y1), (box_x2, box_y2), (60, 60, 60), 1
-            )
-            cv.putText(
-                manager_frame,
-                text,
-                pos,
-                cv.FONT_HERSHEY_SIMPLEX,
-                0.53,
-                color,
-                1,
-                cv.LINE_AA,
-            )
-
-        # ② 下段 (HIGH VIEW) の左右の四隅に「Left High / Right High」を描画
-        txt_lh = f"Left High: {'OK' if has_left_high_ok else 'LOW'}"
-        txt_rh = f"Right High: {'OK' if has_right_high_ok else 'LOW'}"
-
-        high_view_y2 = f_h - 20
-        high_quadrant_items = [
-            (txt_lh, (15, high_view_y2), has_left_high_ok),
-            (txt_rh, (f_w - 180, high_view_y2), has_right_high_ok),
-        ]
-
-        for text, pos, is_ok in high_quadrant_items:
-            color = (0, 255, 0) if is_ok else (0, 0, 255)
-            (text_w, text_h), _ = cv.getTextSize(text, cv.FONT_HERSHEY_SIMPLEX, 0.53, 1)
-            box_x1, box_y1 = pos[0] - 8, pos[1] - text_h - 8
-            box_x2, box_y2 = pos[0] + text_w + 8, pos[1] + 6
-            cv.rectangle(
-                manager_frame, (box_x1, box_y1), (box_x2, box_y2), (15, 15, 15), -1
-            )
-            cv.rectangle(
-                manager_frame, (box_x1, box_y1), (box_x2, box_y2), (60, 60, 60), 1
-            )
-            cv.putText(
-                manager_frame,
-                text,
-                pos,
-                cv.FONT_HERSHEY_SIMPLEX,
-                0.53,
-                color,
-                1,
-                cv.LINE_AA,
-            )
-
+        # 判定エリア(ROI)にいる間、データバッファへ蓄積
         if event_detector.state == EventState.ENTERED_ROI:
-            event_detector.replay_buffer.append(manager_frame.copy())
+            replay_world_landmarks_buffer.append(
+                (
+                    world_landmarks,
+                    final_frame.copy(),
+                    is_right_arm_high,
+                    is_left_arm_high,
+                    event_detector.scores.copy(),
+                )
+            )
 
         # --- 【Monitor Window用】表示切り替えロジック ---
         if event_detector.state == EventState.ENTERED_DISPLAY_CHECK_AREA:
             if not _is_notice_active and not _is_replay_active:
                 _is_notice_active = True
                 _display_area_notice_start_time = time.time()
-                event_detector.replay_index = 0
+
+                # 💡【ローパスフィルタの一括適用】結果確認エリアに到達した瞬間、バッファを平滑化
+                if len(replay_world_landmarks_buffer) > 0:
+                    replay_world_landmarks_buffer = smooth_landmarks_buffer(
+                        replay_world_landmarks_buffer, cutoff_freq=3.0, fs=30.0
+                    )
+
+                # リプレイ状態の初期化
                 event_detector.replay_index_float = 0.0
+                replay_phase = REPLAY_STATE_FRONT
+                replay_pitch_deg = 0.0
+                replay_loop_count = 0
 
                 _session_all_items_confirmed = (
                     all(ev["detected"] for ev in events.values()) if events else False
@@ -291,15 +338,87 @@ while True:
                     _is_replay_active = True
 
             elif _is_replay_active:
-                if len(event_detector.replay_buffer) > 0:
-                    if not hasattr(event_detector, "replay_index_float"):
-                        event_detector.replay_index_float = 0.0
-                    idx = int(event_detector.replay_index_float) % len(
-                        event_detector.replay_buffer
+                buf_len = len(replay_world_landmarks_buffer)
+                if buf_len > 0:
+                    SPEED_STEP = 0.75
+
+                    if replay_phase == REPLAY_STATE_FRONT:
+                        idx = int(event_detector.replay_index_float) % buf_len
+                        event_detector.replay_index_float += SPEED_STEP
+
+                        if event_detector.replay_index_float >= buf_len:
+                            event_detector.replay_index_float = 0.0
+                            replay_loop_count += 1
+                            if replay_loop_count >= 2:
+                                replay_phase = REPLAY_STATE_TRANSITION
+                                transition_start_time = time.time()
+
+                        (
+                            curr_w_lmk,
+                            curr_cam_frame,
+                            curr_r_ok,
+                            curr_l_ok,
+                            curr_scores,
+                        ) = replay_world_landmarks_buffer[idx]
+                        replay_pitch_deg = 0.0
+
+                    elif replay_phase == REPLAY_STATE_TRANSITION:
+                        elapsed = time.time() - transition_start_time
+                        progress = min(1.0, elapsed / 1.0)
+                        replay_pitch_deg = progress * 90.0
+
+                        (
+                            curr_w_lmk,
+                            curr_cam_frame,
+                            curr_r_ok,
+                            curr_l_ok,
+                            curr_scores,
+                        ) = replay_world_landmarks_buffer[-1]
+
+                        if progress >= 1.0:
+                            replay_phase = REPLAY_STATE_TOP
+                            event_detector.replay_index_float = 0.0
+                            replay_loop_count = 0
+
+                    elif replay_phase == REPLAY_STATE_TOP:
+                        idx = int(event_detector.replay_index_float) % buf_len
+                        event_detector.replay_index_float += SPEED_STEP
+
+                        if event_detector.replay_index_float >= buf_len:
+                            event_detector.replay_index_float = 0.0
+                            replay_loop_count += 1
+                            if replay_loop_count >= 2:
+                                replay_phase = REPLAY_STATE_FINISHED
+
+                        (
+                            curr_w_lmk,
+                            curr_cam_frame,
+                            curr_r_ok,
+                            curr_l_ok,
+                            curr_scores,
+                        ) = replay_world_landmarks_buffer[idx]
+                        replay_pitch_deg = 90.0
+
+                    elif replay_phase == REPLAY_STATE_FINISHED:
+                        (
+                            curr_w_lmk,
+                            curr_cam_frame,
+                            curr_r_ok,
+                            curr_l_ok,
+                            curr_scores,
+                        ) = replay_world_landmarks_buffer[-1]
+                        replay_pitch_deg = 90.0
+
+                    # フィルタ適用済みの平滑化フレームを描画
+                    replay_frame = visualizer.generate_animated_frame(
+                        curr_w_lmk,
+                        curr_cam_frame,
+                        replay_pitch_deg,
+                        curr_r_ok,
+                        curr_l_ok,
+                        curr_scores,
                     )
-                    replay_frame = event_detector.replay_buffer[idx].copy()
-                    # indexの増加分を0.5にすることでリプレイ動画のスローモーションを再現
-                    event_detector.replay_index_float += 0.5
+
                     display_frame.set_dynamic_img(
                         "Camera", replay_frame, (0, 0, original_w, original_h)
                     )
@@ -322,6 +441,8 @@ while True:
             _has_saved_exit_status = False
             _ok_played_for_current_ok = False
             _buzzer_played_for_current_ng = False
+
+            replay_world_landmarks_buffer.clear()
             event_detector.reset()
             display_frame.set_dynamic_img(
                 "Camera", white_frame, (0, 0, original_w, original_h)
@@ -331,12 +452,13 @@ while True:
         raw_cam = (
             camera_thread.queue.get()[2] if not camera_thread.queue.empty() else None
         )
-        # 💡 比率変更後のキーワード引数に適合させ、エラーを完全防止
-        manager_frame = visualizer.generate_frame(
+        manager_frame = visualizer.generate_animated_frame(
             world_landmarks=None,
             raw_camera_frame=raw_cam,
+            pitch_deg=0.0,
             is_left_height_ok=False,
             is_right_height_ok=False,
+            scores=event_detector.scores,
         )
 
     display_frame.update_display()
