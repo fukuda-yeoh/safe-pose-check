@@ -473,7 +473,7 @@ class EventDetector:
 
     @staticmethod
     def get_angle_vector(vec):
-        roi_vec = np.array([0.39993894, 0.00629199, -0.00303984])
+        roi_vec = np.array([0.39998588, -0.0013485, -0.00307608])
         vec_scale = np.linalg.norm(vec)
         roi_vec_scale = np.linalg.norm(roi_vec)
 
